@@ -1,5 +1,10 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.15
+
+**The connection dot is round.** In 0.2.14 the green dot beside "Baton" was stretched into a wide oval. It is a
+round dot again, the same size as the others.
+
 ## 0.2.14
 
 **Reopening Baton continues where you were.** Close the app and open it again within 30 minutes and you land exactly

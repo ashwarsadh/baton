@@ -103,8 +103,10 @@ function load({ place = null, sessions = [], open = null, sheet = null, drawerOp
     c.state.boot.cdp = false; c.paint();
     const down = dot.className;
     c.state.open = 'x'; dot.className = 'dot running'; c.paint();
-    check(off === 'dot ' && ok === 'dot live' && down === 'dot err' && dot.className === 'dot running', 'dot: grey connecting, GREEN connected, red when Desktop is down; a session keeps its own dot', { off, ok, down });
-    check(/\.dot\.live\{background:var\(--ok\)\}/.test(P('style.css')), 'the green is the --ok colour');
+    check(off === 'dot ' && ok === 'dot linked' && down === 'dot err' && dot.className === 'dot running', 'dot: grey connecting, GREEN connected, red when Desktop is down; a session keeps its own dot', { off, ok, down });
+    check(/\.dot\.linked\{background:var\(--ok\)\}/.test(P('style.css')), 'the green is the --ok colour');
+    // The first cut used `.live`, a standalone rule (the status line) whose padding stretched the dot into an oval.
+    check(!/^\.linked\s*[{[:]/m.test(P('style.css')) && /^\.live\{[^}]*padding/m.test(P('style.css')), 'the green class has no standalone rule of its own (".live" does, and made the dot an oval)');
     check(/es\.onopen = \(\) => \{ state\.esLastEvent = Date\.now\(\); paintConnDot\(\); \};/.test(app) && /setInterval\(\(\) => \{\s*paintConnDot\(\);/.test(app), 'the dot is repainted on connect and every 10 s');
   }
 

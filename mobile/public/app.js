@@ -1017,7 +1017,7 @@ function paintConnDot() {
   if (state.open) return;
   const c = connState();
   const el = $('chat-state');
-  el.className = 'dot ' + (c === 'ok' ? 'live' : c === 'down' ? 'err' : '');
+  el.className = 'dot ' + (c === 'ok' ? 'linked' : c === 'down' ? 'err' : '');
   el.parentElement.title = c === 'ok' ? 'Connected to your PC' : c === 'down' ? 'Connected, but Claude Desktop is not answering' : 'Connecting…';
 }
 
