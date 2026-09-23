@@ -519,6 +519,8 @@ pre.code{
   cursor:pointer; word-break:break-all;
 }
 .msg.user .fileref{color:var(--on-accent); text-decoration-color:var(--on-accent-dim)}
+.weblink{color:var(--accent); text-decoration:underline; text-underline-offset:2px; overflow-wrap:anywhere; -webkit-user-select:auto; user-select:auto}
+.msg.user .weblink{color:var(--on-accent); text-decoration-color:var(--on-accent-dim)}
 
 .msg.user a{color:var(--on-accent); text-decoration-color:var(--on-accent-dim)}
 

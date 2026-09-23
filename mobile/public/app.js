@@ -232,6 +232,15 @@ function md(src) {
       : `<a class="fileref" data-p="${t}">${label}</a>`);
     return `\u0000L${links.length - 1}\u0000`;
   });
+  // Bare http(s) URLs open in a new tab. Parked like a markdown link BEFORE FILE_RX, so a URL's path is
+  // never also turned into a file link. Runs on escaped text: only http(s), and the match stops at an
+  // escaped quote or bracket, so the href cannot close its attribute. Trailing punctuation stays outside.
+  h = h.replace(URL_RX, (m) => {
+    const url = m.replace(/(?:[.,;:!?)\]}]|&#39;)+$/, '');
+    const tail = m.slice(url.length);
+    links.push(`<a class="weblink" href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`);
+    return `\u0000L${links.length - 1}\u0000${tail}`;
+  });
   h = h.replace(FILE_RX, (m) => {
     const clean = m.replace(/[.,;:)\]]+$/, '');
     const tail = m.slice(clean.length);
@@ -246,6 +255,7 @@ function md(src) {
   return h.replace(/\u0000(\d+)\u0000/g, (_, i) => fences[Number(i)]);
 }
 
+const URL_RX = /\bhttps?:\/\/(?:(?!&quot;|&lt;|&gt;)[^\s<>`"'])+/gi;
 const FILE_RX = /(?:[A-Za-z]:\\[^\s"'<>|`&]+|(?:\.{0,2}[\/])?(?:[\w.@~-]+[\/])+[\w.@~-]+\.\w{1,8})(?::\d+)?/g;
 
 const uiJobs = new Map();

@@ -1,5 +1,11 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.13
+
+**Web links in chat are tappable.** A plain `http://` or `https://` address in a message now opens in a new tab
+when you tap it. Only web addresses become links, never `javascript:` or `data:`. File paths still open Baton's
+file viewer, and the path inside a web address is no longer mistaken for a file.
+
 ## 0.2.12
 
 **No more console windows.** On Windows, starting Baton in the background (`baton start`, `baton open`, the Start-menu
