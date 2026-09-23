@@ -203,7 +203,11 @@ const { check: chk, src } = H;
     const nSheets = h.split('class="sheet hidden"').length - 1, nGrabs = h.split('<div class="grab"></div>').length - 1;
     chk(nSheets > 0 && nGrabs === nSheets, `every sheet draws a grab handle (${nGrabs} for ${nSheets})`);
     chk(src('mobile/public/style.css').indexOf('overscroll-behavior:contain') > 0, 'the sheet body contains its overscroll');
-    const jsAll = ['app.js', 'board-ui.js', 'routines-ui.js', 'accounts-ui.js', 'settings-ui.js'].map(f => { try { return src('mobile/public/' + f); } catch { return ''; } }).join('\n');
+    // The roster is index.html's own script tags: a hand list once missed goals-ui.js, so its
+    // controls were never checked, and a new file would silently escape this check too.
+    const roster = [...h.matchAll(/<script src="\/([\w.-]+\.js)"><\/script>/g)].map(m => m[1]);
+    chk(roster.includes('app.js') && roster.includes('display-ui.js') && roster.includes('goals-ui.js'), `the JS roster comes from index.html (${roster.length} files)`, roster);
+    const jsAll = roster.map(f => src('mobile/public/' + f)).join('\n');
     chk(jsAll.indexOf('SHEET_IDS') < 0, 'no hand-maintained SHEET_IDS list');
     chk(a.indexOf("querySelectorAll('.sheet:not(.hidden)')") > 0 && a.indexOf('open[open.length - 1]') > 0, 'the open sheet is asked of the DOM, topmost last');
     const ctrls = []; { const re = /<(?:button|a|input|select|textarea)[ >][^>]*id="([A-Za-z0-9_-]+)"/g; let m; while ((m = re.exec(h))) ctrls.push(m[1]); }

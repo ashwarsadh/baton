@@ -24,7 +24,8 @@
   --radius:14px;
   --safe-b:env(safe-area-inset-bottom,0px);
   --safe-t:env(safe-area-inset-top,0px);
-  --app-h:100dvh;                      
+  --z:1;                               /* text zoom; set by display-ui.js */
+  --app-h:calc(100dvh / var(--z,1));                      
 }
 @media (prefers-color-scheme: light){
   :root{
@@ -93,7 +94,7 @@ body{
 @keyframes fade{from{opacity:0}to{opacity:1}}
 .drawer{
   position:fixed; top:0; left:0; bottom:0; z-index:31;
-  width:min(86vw,380px); height:var(--app-h);
+  width:min(calc(86vw / var(--z,1)),380px); height:var(--app-h);
   background:var(--panel); border-right:1px solid var(--line);
   display:flex; flex-direction:column; min-height:0;
   transform:translateX(-101%); transition:transform .2s ease-out;
@@ -312,7 +313,7 @@ pre.code{
   border-radius:10px; background:var(--panel-2); border:1px solid var(--line); color:var(--txt); font-size:14px; text-decoration:none}
 .sheet-body{
   width:100%; background:var(--panel); border-radius:18px 18px 0 0;
-  padding:8px 18px calc(var(--safe-b) + 18px); max-height:86vh; overflow-y:auto;
+  padding:8px 18px calc(var(--safe-b) + 18px); max-height:calc(86vh / var(--z,1)); overflow-y:auto;
   
   overscroll-behavior:contain;
   animation:rise .18s ease-out; display:flex; flex-direction:column;
@@ -321,7 +322,7 @@ pre.code{
 .grab{flex:none; width:36px; height:4px; border-radius:2px; background:var(--line); margin:6px auto 12px}
 .sheet h2{flex:none; margin:0 0 4px; font-size:16px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 .sheet .stats{padding:0 0 6px}
-.sheet .sessions{max-height:52vh; flex:0 1 auto}
+.sheet .sessions{max-height:calc(52vh / var(--z,1)); flex:0 1 auto}
 .lbl{flex:none; display:block; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:14px 0 7px}
 .seg{flex:none; display:flex; gap:6px; flex-wrap:wrap}
 .seg button{flex:1 1 auto; min-width:66px; min-height:44px; padding:10px 6px; border-radius:9px; background:var(--panel-2); border:1px solid var(--line); color:var(--dim); font-size:13px; cursor:pointer}
@@ -345,9 +346,9 @@ pre.code{
   position:fixed; left:50%; bottom:calc(var(--safe-b) + 84px); transform:translateX(-50%);
   background:var(--panel-2); border:1px solid var(--line); color:var(--txt);
   padding:10px 16px; border-radius:10px; font-size:13.5px; z-index:50;
-  max-width:88vw; text-align:center; box-shadow:0 6px 22px rgba(0,0,0,.35);
+  max-width:calc(88vw / var(--z,1)); text-align:center; box-shadow:0 6px 22px rgba(0,0,0,.35);
   
-  max-height:38vh; overflow-y:auto; overscroll-behavior:contain;
+  max-height:calc(38vh / var(--z,1)); overflow-y:auto; overscroll-behavior:contain;
 }
 .toast.err{border-color:var(--err); color:var(--err)}
 .toast-more{
@@ -411,7 +412,7 @@ pre.code{
 }
 #sortbar{border-bottom:none; padding-bottom:4px}
 
-.qbox{flex:none; border-top:1px solid var(--line); background:var(--panel); padding:12px 12px 4px; max-height:46vh; overflow-y:auto}
+.qbox{flex:none; border-top:1px solid var(--line); background:var(--panel); padding:12px 12px 4px; max-height:calc(46vh / var(--z,1)); overflow-y:auto}
 .qhead{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--accent); margin-bottom:5px}
 .qtext{font-size:14.5px; margin-bottom:10px; line-height:1.45}
 .qopt{
@@ -432,7 +433,7 @@ pre.code{
   background:var(--panel-2); border:1px solid var(--line); color:var(--txt);
   font-size:16px; font-family:inherit; outline:none; resize:none;
 }
-.folderlist{max-height:30vh; overflow-y:auto; margin-top:8px; border:1px solid var(--line); border-radius:10px}
+.folderlist{max-height:calc(30vh / var(--z,1)); overflow-y:auto; margin-top:8px; border:1px solid var(--line); border-radius:10px}
 .fold{
   display:flex; align-items:center; gap:8px; padding:10px 12px; min-height:44px; cursor:pointer;
   border-bottom:1px solid var(--line); font-size:14px;
@@ -472,7 +473,7 @@ pre.code{
 .cmdlist{
   position:fixed; left:10px; right:10px; bottom:calc(var(--safe-b) + 70px); z-index:45;
   background:var(--panel); border:1px solid var(--line); border-radius:12px;
-  overflow:hidden auto; max-height:44vh; box-shadow:0 10px 30px rgba(0,0,0,.45);
+  overflow:hidden auto; max-height:calc(44vh / var(--z,1)); box-shadow:0 10px 30px rgba(0,0,0,.45);
 }
 .cmd{
   display:block; width:100%; text-align:left; padding:11px 14px; min-height:44px;
@@ -533,7 +534,7 @@ a:visited{color:var(--accent)}
   color:var(--txt); font:inherit; font-size:14px; cursor:pointer;
 }
 .direntry:last-child{border-bottom:none}
-#fileview .sheet-body{max-height:92vh}
+#fileview .sheet-body{max-height:calc(92vh / var(--z,1))}
 #file-path{margin-bottom:4px}
 
 .msg.user.queued{border:1px dashed var(--on-accent-line)}
@@ -687,12 +688,12 @@ a:visited{color:var(--accent)}
 .routine-detail{padding:0 10px 16px}
 .rt-runs{margin:8px 0}
 .rt-run{display:flex; justify-content:space-between; padding:7px 4px; border-bottom:1px solid var(--line); font-size:13px}
-.rt-prompt{white-space:pre-wrap; font-size:12px; line-height:1.4; max-height:40vh; overflow:auto; background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:10px}
+.rt-prompt{white-space:pre-wrap; font-size:12px; line-height:1.4; max-height:calc(40vh / var(--z,1)); overflow:auto; background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:10px}
 
 .att.failed{border:1px solid var(--err); color:var(--err); cursor:pointer}
 .att.failed b{font-weight:500}
 
-#view-board .sheet-body{max-height:92vh}
+#view-board .sheet-body{max-height:calc(92vh / var(--z,1))}
 .board-built{font-size:11.5px; font-weight:400; color:var(--dim)}
 .board-conductor{display:flex; flex-direction:column; gap:1px; padding:7px 10px; border-radius:9px; font-size:12px; margin:2px 0 8px}
 .board-conductor b{font-size:12px; font-weight:600}
@@ -781,8 +782,8 @@ button.bcard-t{background:none; border:none; color:var(--accent); font:inherit; 
 #view-board .sheet-body{will-change:transform}
 
 .answer-for{font-weight:600; font-size:14px; line-height:1.3; margin-bottom:6px}
-.answer-ask{max-height:22vh; overflow:auto; margin:0 0 10px}
-#answer-text{width:100%; min-height:104px; max-height:38vh; padding:10px 12px; border-radius:10px;
+.answer-ask{max-height:calc(22vh / var(--z,1)); overflow:auto; margin:0 0 10px}
+#answer-text{width:100%; min-height:104px; max-height:calc(38vh / var(--z,1)); padding:10px 12px; border-radius:10px;
   border:1px solid var(--line); background:var(--panel-2); color:var(--txt); font:inherit; font-size:15px;
   line-height:1.45; resize:none; overflow-y:auto}
 #answer-text:focus{outline:none; border-color:var(--accent)}
@@ -896,7 +897,7 @@ button.bcard-t{background:none; border:none; color:var(--accent); font:inherit; 
   border:1px solid var(--wait); color:var(--txt); font-size:12px; cursor:pointer;
 }
 
-.settings .sheet-body{max-height:92dvh}
+.settings .sheet-body{max-height:calc(92dvh / var(--z,1))}
 .set-body{overflow-y:auto; flex:1 1 auto; padding:4px 2px 8px; -webkit-overflow-scrolling:touch}
 .set-body h3{font-size:13px; font-weight:600; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; margin:18px 0 6px}
 .set-lead{color:var(--dim); font-size:13.5px; line-height:1.5; margin:6px 0 12px}
@@ -936,7 +937,7 @@ button.bcard-t{background:none; border:none; color:var(--accent); font:inherit; 
 .set-steps{padding-left:20px; line-height:1.55; font-size:14px}
 .set-steps li{margin:0 0 10px}
 @media (max-width:420px){ .set-qr{flex-direction:column; align-items:flex-start} .set-qr .qr{width:200px; height:200px} }
-@media (min-width:900px){ .settings{align-items:center; justify-content:center} .settings .sheet-body{max-width:640px; width:100%; border-radius:16px; max-height:86vh} }
+@media (min-width:900px){ .settings{align-items:center; justify-content:center} .settings .sheet-body{max-width:640px; width:100%; border-radius:16px; max-height:calc(86vh / var(--z,1))} }
 .set-field select,.set-field textarea{width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:var(--panel-2); color:var(--txt); font:inherit; font-size:14px}
 .set-field textarea{resize:vertical; min-height:64px}
 .set-level{border-top:1px solid var(--line); padding:10px 2px 0; margin-top:6px}
@@ -970,3 +971,49 @@ button.bcard-t{background:none; border:none; color:var(--accent); font:inherit; 
 .drawer-head{flex-wrap:wrap; row-gap:0}
 .drawer-head h1{min-width:96px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
 @media (max-width:420px){ .drawer-head .icon-btn{width:38px} }
+
+/* ---------------- density + Display sheet ----------------
+   compact (the default) cuts WHITESPACE, not tap targets: on a touch screen chips, icon buttons and
+   board buttons keep their 44px; only on a fine pointer (desktop) do they shrink. Text zoom is
+   display-ui.js; it is why every vh/vw above is divided by var(--z,1). */
+html[data-density="compact"] .drawer-head{padding:calc(var(--safe-t) + 4px) 6px 4px 12px}
+html[data-density="compact"] .drawer-head h1{font-size:16px}
+html[data-density="compact"] .stats{padding:5px 12px 0; font-size:12.5px}
+html[data-density="compact"] .search-row{padding:6px 10px 4px}
+html[data-density="compact"] #search{padding-top:7px; padding-bottom:7px}
+html[data-density="compact"] .chips{padding-top:2px; padding-bottom:4px}
+html[data-density="compact"] .chip{padding:0 11px}
+html[data-density="compact"] .row{padding:7px 12px; gap:9px}
+html[data-density="compact"] .row-title{font-size:14px; line-height:1.25; -webkit-line-clamp:1}
+html[data-density="compact"] .row-meta{margin-top:1px}
+html[data-density="compact"] .drawer-foot{padding:6px 10px calc(var(--safe-b) + 6px)}
+html[data-density="compact"] .sheet-body{padding:4px 14px calc(var(--safe-b) + 12px)}
+html[data-density="compact"] .grab{margin:4px auto 8px}
+html[data-density="compact"] .bcard{padding:7px 10px; border-radius:9px}
+html[data-density="compact"] .bcard-t{font-size:13.5px}
+html[data-density="compact"] .bsec{padding-top:5px}
+html[data-density="compact"] .board-conductor{padding:5px 9px; margin:0 0 5px}
+@media (pointer:fine){
+  html[data-density="compact"] .chip{min-height:32px}
+  html[data-density="compact"] .icon-btn{width:36px; height:36px}
+  html[data-density="compact"] .searchclear{width:32px; height:32px}
+  html[data-density="compact"] .bbtn{min-height:32px; padding:5px 10px}
+  html[data-density="compact"] .ghost{padding:8px}
+  html[data-density="compact"] .seg button{min-height:34px; padding:6px}
+}
+/* Desktop: sheets used about 60% of an 800px screen. Give them the height and a wider column. */
+@media (min-width:900px){
+  .sheet{align-items:center; justify-content:center}
+  .sheet-body{max-width:min(1100px, calc(94vw / var(--z,1))); border-radius:14px; max-height:calc(94vh / var(--z,1))}
+  #view-board .sheet-body{max-height:calc(96vh / var(--z,1))}
+  .sheet .sessions{max-height:calc(70vh / var(--z,1))}
+}
+
+.display-btn{flex:0 0 auto; min-width:48px; font-weight:600}
+.zoomrow{display:flex; align-items:center; gap:8px; margin:4px 0 12px}
+.zoomrow input[type=range]{flex:1; min-width:0; accent-color:var(--accent)}
+.zoomrow button{flex:none; width:44px; height:44px; border-radius:10px; background:var(--panel-2);
+  border:1px solid var(--line); color:var(--txt); font-size:20px; cursor:pointer}
+.zoom-val{float:right; color:var(--accent); font-weight:600; font-variant-numeric:tabular-nums}
+#view-display .lbl{display:block; font-size:13px; color:var(--dim); margin:6px 0 2px}
+.display-note{font-size:12px; color:var(--dim); line-height:1.4; margin:10px 0 6px}

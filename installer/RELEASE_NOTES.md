@@ -1,5 +1,12 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.6
+
+**Text size and density** ("Aa" at the foot of the session list). Text size runs from 70% to 150% and
+scales the whole layout, not only the fonts, so smaller text fits more sessions, cards and messages on the screen.
+Density is Compact (the new default: less white space, same tap targets on a touch screen) or Comfortable (the
+earlier look). Both are saved per device. On a desktop window, sheets now open centred and use most of the height.
+
 ## 0.2.5
 
 **Idle-CLI reaper: a Remote Control session is now never released, and the option to allow it is gone.** 0.2.4

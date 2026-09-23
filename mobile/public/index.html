@@ -13,6 +13,11 @@
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/icon-192.png">
 <link rel="stylesheet" href="/style.css">
+<!-- Text size and density, applied before first paint so the page never jumps. Per device
+     (localStorage). The Display sheet (display-ui.js) changes them live. -->
+<script>(function(){try{var r=document.documentElement,z=parseFloat(localStorage.getItem('baton.zoom'))||1,
+d=localStorage.getItem('baton.density')||'compact';if(z<.7||z>1.5)z=1;r.style.setProperty('--z',z);
+if(z!==1)r.style.zoom=z;r.setAttribute('data-density',d);}catch(e){}})();</script>
 </head>
 <body>
 
@@ -50,6 +55,7 @@
   <div class="drawer-foot">
     <button id="btn-new" class="ghost primary">＋ New session</button>
     <button id="btn-tasks" class="ghost">Task queue</button>
+    <button id="btn-display" class="ghost display-btn" title="Text size and density" aria-label="Display: text size and density">Aa</button>
   </div>
   
   <div id="buildline" class="buildline" hidden></div>
@@ -94,6 +100,26 @@
   <input type="file" id="file" multiple hidden>
 </main>
 
+
+<section id="view-display" class="sheet hidden" role="dialog" aria-modal="true" aria-label="Display">
+  <div class="sheet-body">
+    <div class="grab"></div>
+    <h2>Display</h2>
+    <span class="lbl">Text size <span id="zoom-val" class="zoom-val">100%</span></span>
+    <div class="zoomrow">
+      <button id="zoom-minus" class="ghost" aria-label="Smaller text">A&minus;</button>
+      <input id="zoom-range" type="range" min="70" max="150" step="5" value="100" aria-label="Text size">
+      <button id="zoom-plus" class="ghost" aria-label="Larger text">A+</button>
+    </div>
+    <span class="lbl">Density</span>
+    <div class="seg" id="density-seg">
+      <button data-d="compact">Compact</button>
+      <button data-d="comfortable">Comfortable</button>
+    </div>
+    <p class="display-note">Saved on this device only. Smaller text fits more sessions, cards and messages on the screen.</p>
+    <div class="sheet-actions"><button id="zoom-reset" class="ghost">Reset</button><button id="btn-close-display" class="ghost">Done</button></div>
+  </div>
+</section>
 
 <section id="view-routines" class="sheet hidden" role="dialog" aria-modal="true" aria-label="Routines">
   <div class="sheet-body">
@@ -247,5 +273,6 @@
 <script src="/goals-ui.js"></script>
 <script src="/accounts-ui.js"></script>
 <script src="/settings-ui.js"></script>
+<script src="/display-ui.js"></script>
 </body>
 </html>

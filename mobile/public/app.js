@@ -88,7 +88,10 @@ let seenMsgIds = new Set();
 function syncViewport() {
   const vv = window.visualViewport;
   const h = vv ? vv.height : window.innerHeight;
-  document.documentElement.style.setProperty('--app-h', h + 'px');
+  // Under CSS zoom z a px height renders at z times its size, but visualViewport is unzoomed, so the
+  // column must be h / z CSS px to still fill the screen (see display-ui.js).
+  const z = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--z')) || 1;
+  document.documentElement.style.setProperty('--app-h', (h / z) + 'px');
   const log = logAtBottom ? document.getElementById('log') : null;
   if (log) requestAnimationFrame(() => setScrollTop(log, log.scrollHeight));
 }
