@@ -597,6 +597,7 @@ a:visited{color:var(--accent)}
 .row.task.live .row-title{color:var(--txt)}
 .row.task.open{background:var(--panel-2)}
 .dot.err{background:var(--err)}
+.dot.live{background:var(--ok)}
 .taskmore:empty{display:none}
 .taskmore{margin-top:8px; display:flex; flex-direction:column; gap:6px}
 .tbrief{margin:0; font-size:12.5px; line-height:1.5; color:var(--dim)}

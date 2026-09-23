@@ -1,5 +1,20 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.14
+
+**Reopening Baton continues where you were.** Close the app and open it again within 30 minutes and you land exactly
+where you left off: the same session, the Board, or the session list. After longer than that, the first time, or when
+that session has gone, Baton opens the session that is open in Claude Desktop on your PC, so the most relevant
+conversation is in front of you and you can switch from there. The Board no longer opens by itself.
+
+**A green dot when Baton is connected.** With no session open, the dot beside "Baton" is green while the app is
+connected to your PC and Claude Desktop answers, red when Desktop cannot be reached, and grey while connecting.
+
+**"This app cannot be installed" fixed over plain http.** Chrome can only install web apps from an `https://` address.
+Opened over a Tailscale or LAN `http://` address, Install and Create shortcut used to fail with that message. Over
+http Baton now offers no app manifest, so Chrome's **Add to Home screen** makes an ordinary shortcut. Opened over
+`https://`, Baton installs as an app as before.
+
 ## 0.2.13
 
 **Web links in chat are tappable.** A plain `http://` or `https://` address in a message now opens in a new tab

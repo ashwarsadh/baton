@@ -822,13 +822,6 @@
   $('btn-board-refresh').onclick = () => { $('board-list').innerHTML = '<div class="empty">Loading…</div>'; loadBoard(); };
   $('btn-close-board').onclick = () => navBack();
   window.openBoard = openBoard;
-  // For app.js firstScreen(): how many "For you" items wait on the Board right now (throws when the
-  // Board is off or unreachable; the caller treats that as 0). Keeps the data, so opening is instant.
-  window.boardWaiting = async () => {
-    const d = await api('/api/board');
-    B.data = d;
-    return Filter.count(d.inbox, filt({ bucket: 'inbox', showHandled: false, days: null }));
-  };
 
   // Flush triggers. Closing the board by ANY path sends the queue: observed on the sheet's own `hidden`
   // class rather than wired into each close control.

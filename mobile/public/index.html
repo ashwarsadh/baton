@@ -6,10 +6,8 @@
 
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#12110f">
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="#faf9f7">
-<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Baton</title>
-<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/icon-192.png">
 <link rel="stylesheet" href="/style.css">
@@ -18,6 +16,13 @@
 <script>(function(){try{var r=document.documentElement,z=parseFloat(localStorage.getItem('baton.zoom'))||1,
 d=localStorage.getItem('baton.density')||'compact';if(z<.7||z>1.5)z=1;r.style.setProperty('--z',z);
 if(z!==1)r.style.zoom=z;r.setAttribute('data-density',d);}catch(e){}})();</script>
+<!-- The app manifest only where the page can be installed. Over plain http (a Tailscale or LAN address)
+     the page is not a secure context: no service worker, so Chrome cannot install it, and with a manifest
+     present its Install / Create shortcut both end in "This app cannot be installed". Without one, Chrome's
+     Add to Home screen makes an ordinary shortcut. Over https (a Cloudflare hostname) it installs as an app. -->
+<script>(function(){if(!window.isSecureContext)return;var h=document.head,l=document.createElement('link');
+l.rel='manifest';l.href='/manifest.webmanifest';l.crossOrigin='use-credentials';h.appendChild(l);
+var m=document.createElement('meta');m.name='mobile-web-app-capable';m.content='yes';h.appendChild(m);})();</script>
 </head>
 <body>
 

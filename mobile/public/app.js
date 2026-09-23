@@ -375,6 +375,7 @@ window.addEventListener('focus', () => resumeNow());
 window.addEventListener('online', () => resumeNow());
 
 setInterval(() => {
+  paintConnDot();
   if (document.hidden || !state.es) return;
   if (Date.now() - (state.esLastEvent || 0) > 50000) {
     connectStream(state.esWatch || undefined);
@@ -1003,10 +1004,28 @@ async function loadSessions() {
   } catch (e) { toast('List failed: ' + e.message, true); }
 }
 
+// With no session open, the header dot beside "Baton" says whether Baton is connected (g454): green when
+// the live stream from the PC is up and Claude Desktop answers, red when Desktop's link is down, grey
+// while connecting or unreachable. It was the session-state dot with no session, so it stayed grey.
+// Inside a session it is that session's state (renderHeader), as before.
+function connState() {
+  const streamUp = !!(state.es && state.es.readyState === 1 && Date.now() - (state.esLastEvent || 0) < 50000);
+  if (!streamUp) return 'off';
+  return state.boot && state.boot.cdp === false ? 'down' : 'ok';
+}
+function paintConnDot() {
+  if (state.open) return;
+  const c = connState();
+  const el = $('chat-state');
+  el.className = 'dot ' + (c === 'ok' ? 'live' : c === 'down' ? 'err' : '');
+  el.parentElement.title = c === 'ok' ? 'Connected to your PC' : c === 'down' ? 'Connected, but Claude Desktop is not answering' : 'Connecting…';
+}
+
 function noteLinkState(d) {
   if (!d || typeof d.cdp !== 'boolean' || !state.boot) return;
   const was = state.boot.cdp;
   state.boot.cdp = d.cdp;
+  paintConnDot();
   state.snapshotAt = d.snapshotAt || null;
   renderBlocker(d.blocker);
   renderStats();
@@ -1100,30 +1119,49 @@ function renderHeader(meta) {
   $('chat-sub').textContent = bits.join(' · ');
 }
 
-// The first screen after a cold open, instead of an empty page behind the session list: the Board when
-// something on it is waiting for you (its "For you" items), else the session you were last in here, else
-// the most recently active one. The Board is asked for at most FIRST_SCREEN_WAIT_MS; a slow or disabled
-// Board just means the session. Anything you opened while the list loaded wins.
-const FIRST_SCREEN_WAIT_MS = 2500;
+// Where a cold open lands (g454, replacing "the Board first"). Closed and reopened within RESUME_MS:
+// exactly where you were (that session, the Board, or the session list). Otherwise, or when that
+// session is gone or archived: the session open on the PC right now (Claude Desktop's own selection,
+// the `active` flag on the list), else the most recently active one, else the session list. The
+// place is saved whenever the app is hidden or closed, and when a session opens. Anything you opened
+// while the app loaded wins.
+const RESUME_MS = 30 * 60000;
+const PLACE_KEY = 'baton.lastPlace';
+function currentPlace() {
+  if (visibleSheetId() === 'view-board') return { kind: 'board' };
+  if (state.open) return { kind: 'chat', id: state.open };
+  return { kind: 'list' };
+}
+function savePlace() {
+  try { localStorage.setItem(PLACE_KEY, JSON.stringify({ ...currentPlace(), at: Date.now() })); } catch {}
+}
+/** The rule itself, pure: place = what savePlace() stored (or null), list = the session rows. */
+function pickFirstScreen(place, list, { now = Date.now(), board = true } = {}) {
+  const live = (list || []).filter(s => s && !s.archived);
+  if (place && typeof place.at === 'number' && now - place.at <= RESUME_MS) {
+    if (place.kind === 'board' && board) return { kind: 'board', why: 'resume' };
+    if (place.kind === 'list') return { kind: 'list', why: 'resume' };
+    if (place.kind === 'chat' && live.some(s => s.id === place.id)) return { kind: 'chat', id: place.id, why: 'resume' };
+  }
+  const pc = live.find(s => s.active);
+  if (pc) return { kind: 'chat', id: pc.id, why: 'pc' };
+  const newest = live.slice().sort((a, b) => (b.at || 0) - (a.at || 0))[0];
+  if (newest) return { kind: 'chat', id: newest.id, why: 'recent' };
+  return { kind: 'list', why: 'empty' };
+}
 async function firstScreen(touched0 = navTouched) {
   const untouched = () => !state.open && !visibleSheetId() && !$('drawer').classList.contains('open') && navTouched === touched0;
-  let waiting = 0;
-  if (typeof window.boardWaiting === 'function') {
-    waiting = await Promise.race([
-      Promise.resolve().then(() => window.boardWaiting()).catch(() => 0),
-      new Promise(r => setTimeout(() => r(0), FIRST_SCREEN_WAIT_MS)),
-    ]);
-  }
   if (!untouched()) return 'user';
-  if (waiting > 0 && typeof window.openBoard === 'function') { window.openBoard(); return 'board'; }
-  const list = (state.rawSessions || state.sessions || []).filter(s => !s.archived);
-  let last = null;
-  try { last = localStorage.getItem('baton.lastChat'); } catch {}
-  const pick = (last && list.find(s => s.id === last)) || list.slice().sort((a, b) => (b.at || 0) - (a.at || 0))[0];
-  if (pick) { openChat(pick.id); return 'session'; }
-  drawer(true);
-  return 'drawer';
+  let place = null;
+  try { place = JSON.parse(localStorage.getItem(PLACE_KEY) || 'null'); } catch {}
+  const p = pickFirstScreen(place, state.rawSessions || state.sessions || [], { board: typeof window.openBoard === 'function' });
+  if (p.kind === 'board') window.openBoard();
+  else if (p.kind === 'chat') openChat(p.id);
+  else drawer(true);
+  return p.kind + ':' + p.why;
 }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') savePlace(); });
+window.addEventListener('pagehide', savePlace);
 
 async function openChat(id) {
   if (!navQuiet && id !== state.open) navRecord();
@@ -1136,7 +1174,7 @@ async function openChatInner(id) {
   const sameSession = state.open === id;
   if (state.open && state.open !== id) saveDraft(state.open, $('input').value);
   state.open = id;
-  try { localStorage.setItem('baton.lastChat', id); } catch {}
+  try { localStorage.setItem(PLACE_KEY, JSON.stringify({ kind: 'chat', id, at: Date.now() })); } catch {}
   state.liveSuggestion = null;
   if (state.pending && state.pending.sid !== id) state.pending = null;
   state.attachments = []; renderAttachments();
@@ -1228,8 +1266,8 @@ function connectStream(watch) {
   state.es = es;
   state.esWatch = watch || null;
   state.esLastEvent = Date.now();
-  es.onopen = () => { state.esLastEvent = Date.now(); };
-  es.addEventListener('ping', () => { state.esLastEvent = Date.now(); });
+  es.onopen = () => { state.esLastEvent = Date.now(); paintConnDot(); };
+  es.addEventListener('ping', () => { state.esLastEvent = Date.now(); paintConnDot(); });
   es.addEventListener('sessions', ev => {
     state.esLastEvent = Date.now();
     const d = JSON.parse(ev.data);
@@ -1361,7 +1399,7 @@ function connectStream(watch) {
     if (state.open && (d.confirmed || []).some(e => e.session === state.open)) { renderLog(state.messages, false); reloadOpenChat(true); }
     checkOutbox();
   });
-  es.onerror = () => {};
+  es.onerror = () => { paintConnDot(); };
 }
 
 async function openFile(p) {
