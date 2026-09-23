@@ -135,16 +135,24 @@ if(z!==1)r.style.zoom=z;r.setAttribute('data-density',d);}catch(e){}})();</scrip
 <section id="view-board" class="sheet hidden" role="dialog" aria-modal="true" aria-label="Board">
   <div class="sheet-body">
     <div class="grab"></div>
-    <h2>Board <span id="board-built" class="board-built"></span></h2>
+    <div class="board-head">
+      <h2>Board <span id="board-built" class="board-built"></span></h2>
+      <button id="btn-board-refresh" class="icon-btn board-refresh" title="Refresh" aria-label="Refresh the board">&#x21bb;</button>
+    </div>
     <div id="board-conductor" class="board-conductor"></div>
     <nav class="chips" id="board-buckets" aria-label="Buckets"></nav>
-    <div class="search-row board-search">
-      <input id="board-q" type="search" placeholder="Search title, ask, project…" autocomplete="off" enterkeyhint="search">
+    <div class="board-filters">
+      <div class="search-row board-search">
+        <input id="board-q" type="search" placeholder="Search…" autocomplete="off" enterkeyhint="search" aria-label="Search title, ask, project">
+      </div>
+      <nav class="chips board-days" id="board-days" aria-label="Age"></nav>
     </div>
-    <nav class="chips board-days" id="board-days" aria-label="Age"></nav>
     <div id="board-list" class="board-list"><div class="empty">Loading…</div></div>
-    <div class="sheet-actions">
-      <button id="btn-board-refresh" class="ghost">Refresh</button>
+    <div id="board-pending" class="board-pending hidden" role="status" aria-live="polite">
+      <span id="board-pending-n">0 replies pending</span>
+      <button id="board-sendall" class="bbtn b-yes">Send all as one</button>
+    </div>
+    <div class="sheet-actions board-actions">
       <button id="btn-close-board" class="ghost">Done</button>
     </div>
   </div>

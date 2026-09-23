@@ -653,6 +653,8 @@ async function evictWedgedHolder(reason) {
     setInterval(() => serialise(reaperTick), REAPER_MS);
     setInterval(updateTick, UPDATE_MS);
     setTimeout(updateTick, 3 * 60000);
+    // Straight after an update: record it, remove the one-shot task, bring the tray back (lib/updater.js landed()).
+    setTimeout(() => { try { if (config.mod('autoUpdate')) require('./lib/updater').landed(); } catch (e) { orch.log('update landed: ' + e.message); } }, 30000);
 
     try {
       if (config.mod('app')) require('./mobile')();

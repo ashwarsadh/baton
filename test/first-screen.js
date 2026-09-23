@@ -14,14 +14,14 @@ const app = fs.readFileSync(path.join(__dirname, '..', 'mobile', 'public', 'app.
 const board = fs.readFileSync(path.join(__dirname, '..', 'mobile', 'public', 'board-ui.js'), 'utf8');
 const src = app.slice(app.indexOf('const FIRST_SCREEN_WAIT_MS'), app.indexOf('async function openChat(id) {'));
 
-function run({ waiting = 0, waitFn = null, last = null, sessions = [], openMeanwhile = false, waitMs = 50 } = {}) {
+function run({ waiting = 0, waitFn = null, last = null, sessions = [], openMeanwhile = false, navMeanwhile = false, waitMs = 50 } = {}) {
   const did = [];
   const store = { 'baton.lastChat': last };
   const drawerEl = { classList: { contains: () => false } };
   const ctx = {
     state: { open: null, rawSessions: sessions },
     window: {
-      boardWaiting: waitFn || (async () => { if (openMeanwhile) ctx.state.open = 'tapped'; return waiting; }),
+      boardWaiting: waitFn || (async () => { if (openMeanwhile) ctx.state.open = 'tapped'; if (navMeanwhile) ctx.navTouched++; return waiting; }),
       openBoard: () => did.push('board'),
     },
     localStorage: { getItem: k => store[k] || null },
@@ -29,6 +29,7 @@ function run({ waiting = 0, waitFn = null, last = null, sessions = [], openMeanw
     $: () => drawerEl,
     openChat: id => did.push('chat:' + id),
     drawer: () => did.push('drawer'),
+    navTouched: 0,
     setTimeout, Promise,
   };
   vm.createContext(ctx);
@@ -37,7 +38,7 @@ function run({ waiting = 0, waitFn = null, last = null, sessions = [], openMeanw
 }
 
 (async () => {
-  check(src.length > 300 && /async function firstScreen\(\)/.test(src), 'firstScreen is found in app.js');
+  check(src.length > 300 && /async function firstScreen\(touched0 = navTouched\)/.test(src), 'firstScreen is found in app.js');
   const S = [{ id: 'old', at: 1 }, { id: 'newest', at: 9 }, { id: 'arch', at: 99, archived: true }, { id: 'mine', at: 5 }];
 
   let x = await run({ waiting: 2, last: 'mine', sessions: S });
@@ -50,6 +51,8 @@ function run({ waiting = 0, waitFn = null, last = null, sessions = [], openMeanw
   check(x.did.join() === 'chat:newest', 'an archived last session is not reopened', x);
   x = await run({ waiting: 0, sessions: [] });
   check(x.r === 'drawer' && x.did.join() === 'drawer', 'no sessions at all: the session list', x);
+  x = await run({ waiting: 3, sessions: S, navMeanwhile: true });
+  check(x.r === 'user' && x.did.length === 0, 'any navigation while the Board was asked (even one that left nothing open) wins', x);
   x = await run({ waiting: 3, sessions: S, openMeanwhile: true });
   check(x.r === 'user' && x.did.length === 0, 'something you opened while it loaded wins: nothing is opened over it', x);
   x = await run({ waitFn: async () => { throw new Error('module disabled'); }, last: 'mine', sessions: S });
@@ -59,10 +62,14 @@ function run({ waiting = 0, waitFn = null, last = null, sessions = [], openMeanw
   check(x.did.join() === 'chat:mine' && Date.now() - t0 < 1000, 'a Board that never answers is given up on after FIRST_SCREEN_WAIT_MS', { ms: Date.now() - t0, x });
 
   // Wiring: boot asks firstScreen only without a ?s= link and with no sheet open; the chat remembers itself.
-  check(/\} else if \(!visibleSheetId\(\)\) \{\s*window\.__batonFirstScreen = await firstScreen\(\);/.test(app), 'boot uses firstScreen only when no ?s= link and no sheet is open');
+  check(/const userMoved = navTouched !== bootTouched \|\| !!visibleSheetId\(\) \|\| !!state\.open;\s*if \(userMoved\) \{[^}]*\}\s*else if \(want\) openChat\(want\);\s*else firstScreen\(bootTouched\)/.test(app),
+    'boot navigates last only if nothing moved since it started: then the ?s= link, else firstScreen');
+  check(/function navRecord\(\) \{\s*navTouched\+\+;\s*if \(navQuiet\) return;/.test(app), 'every navigation is counted, before the quiet-restore return');
+  check(/\(async function boot\(\) \{\s*const bootTouched = navTouched;/.test(app), 'boot takes its baseline first thing');
+  check(/history\.replaceState\(history\.state, '', location\.pathname \+ location\.hash\)/.test(app), 'the ?s= cleanup keeps the history state and the #board hash');
   check(!/openChat\(state\.sessions\[0\]\.id\)/.test(app), 'the old desktop-only "first session in the list" rule is gone');
   check(/state\.open = id;\s*try \{ localStorage\.setItem\('baton\.lastChat', id\); \} catch \{\}/.test(app), 'opening a session remembers it as the last one');
-  check(/window\.boardWaiting = async \(\) => \{[\s\S]*?Filter\.count\(d\.inbox, filt\(\{ bucket: 'inbox', showHandled: false \}\)\)/.test(board), 'the Board counts exactly its "For you" items');
+  check(/window\.boardWaiting = async \(\) => \{[\s\S]*?Filter\.count\(d\.inbox, filt\(\{ bucket: 'inbox', showHandled: false, days: null \}\)\)/.test(board), 'the Board counts exactly its "For you" items, whatever day chip is on');
 
   console.log(failed ? `\n${failed} check(s) failed` : '\nall first-screen checks passed');
   process.exit(failed ? 1 : 0);

@@ -395,16 +395,34 @@ function told(owner, title, quietH, extra = {}) {
   ] });
   check(out.code === 200 && msgs.length === 1 && msgs[0].to === CONDUCTOR, 'queued answers go out as ONE message to the Conductor');
   const lines = msgs[0].text.split('\n');
-  check(lines.length === 4 && /3 replies/.test(lines[0]) && lines.some(l => l.startsWith('skip ' + sid(4))) && !lines.some(l => l.startsWith('yes ' + sid(4))),
-    'one line per card; a later tap on the same card replaces the earlier one');
-  check(lines.some(l => /^answer local_\S+: tomorrow, 9am/.test(l)) && lines.some(l => l.startsWith('done #1')), 'answers and inbox items keep the single-tap line format');
+  check(lines.length === 3 && lines.every(l => l.startsWith('[board] ')) && lines.some(l => l.startsWith('[board] skip ' + sid(4))) && !lines.some(l => l.startsWith('[board] yes ' + sid(4))),
+    'one "[board] " line per card, no header line; a later tap on the same card replaces the earlier one', lines);
+  check(lines.some(l => /^\[board\] answer local_\S+: tomorrow, 9am/.test(l)) && lines.some(l => l.startsWith('[board] done #1')), 'answers and inbox items keep the single-tap line format');
   check(out.body.sent === 3 && out.body.rejected.length === 1 && out.body.rejected[0].id === 'local_nope', 'a card no longer on the board is reported back, not sent');
   const acted = board.readActed();
   check(acted[sid(4)] && acted[sid(3)] && acted['#1'], 'every sent card is marked handled');
   check(goals.notes().length === 0, 'Done on a Baton note closes it');
+  {
+    // The per-line audit records stay (the Conductor's index reads id + kind from each); one batch record joins them.
+    const recs = fs.readFileSync(board.AUDIT, 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(r => r.batch === out.body.batch);
+    check(recs.filter(r => r.kind === 'batch').length === 1 && recs.filter(r => r.kind !== 'batch' && r.id).length === 3,
+      'one batch record plus one record per line, all under the batch id', recs.map(r => r.kind));
+  }
+  // A retry of the SAME batch (its answer was lost) is answered from memory, never delivered twice.
+  const B1 = [{ kind: 'done', id: '#1' }];
+  out = await board.actBatch({ items: B1, bid: 'b1-test' });
+  const afterFirst = msgs.length;
+  const again = await board.actBatch({ items: B1, bid: 'b1-test' });
+  check(out.code === 200 && again.code === 200 && again.body.repeat === true && msgs.length === afterFirst, 'the same bid twice: delivered once, the retry is told it went', { afterFirst, n: msgs.length });
+  await board.actBatch({ items: B1, bid: 'b2-test' });
+  check(msgs.length === afterFirst + 1, 'a different bid is a new batch (the guard keys on bid, not on content)');
   board._setConductorState(async () => ({ id: null, ok: false, reason: 'No Conductor session is claimed' }));
-  out = await board.actBatch({ items: [{ kind: 'yes', id: sid(4) }] });
-  check(out.code === 429 && msgs.length === 1, 'no Conductor: nothing is sent and the queue is kept');
+  const before429 = msgs.length;
+  out = await board.actBatch({ items: [{ kind: 'yes', id: sid(4) }], bid: 'b3-test' });
+  check(out.code === 429 && msgs.length === before429, 'no Conductor: nothing is sent and the queue is kept');
+  board._setConductorState(async () => ({ id: CONDUCTOR, ok: true, reason: 'idle' }));
+  out = await board.actBatch({ items: [{ kind: 'yes', id: sid(4) }], bid: 'b3-test' });
+  check(out.code === 200 && !out.body.repeat && msgs.length === before429 + 1, 'a batch that FAILED is not remembered: its retry is sent');
   board._setSender(null); board._setConductorState(null);
 
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}

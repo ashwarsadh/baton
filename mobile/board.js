@@ -260,8 +260,16 @@ function closeBatonNote(board, l, kind) {
   } catch (e) { log('inbox update failed: ' + e.message); }
 }
 
-/** Several queued taps delivered to the Conductor as ONE message, one line each. */
-async function actBatch({ items, who } = {}) {
+/**
+ * Several queued taps delivered to the Conductor as ONE message, one "[board] <line>" per tap. The app
+ * queues every tap and sends the queue when you tap "Send all", close the board, or reopen the app
+ * with a queue left over. `bid` names the batch: a retry of the same batch (the answer was lost on
+ * the way back) is answered from memory and never delivered twice.
+ */
+const BATCHES = new Map();
+async function actBatch({ items, bid, who } = {}) {
+  bid = bid ? String(bid).slice(0, 80) : null;
+  if (bid && BATCHES.has(bid)) return { code: 200, body: { ...BATCHES.get(bid), repeat: true } };
   const board = readBoard();
   if (!board.ok) return { code: 503, body: { ok: false, error: board.error, detail: board.detail } };
   const byId = new Map();
@@ -275,13 +283,12 @@ async function actBatch({ items, who } = {}) {
   if (!lines.length) return { code: 400, body: { ok: false, error: 'nothing-to-send', rejected } };
 
   const st = await STATE_FN(board, { fresh: true });
-  const batch = 'b' + Date.now().toString(36);
+  const batch = bid || 'b' + Date.now().toString(36);
   if (!st.ok) {
     audit({ at: new Date().toISOString(), kind: 'batch', batch, lines: lines.map(l => l.line), who: who || 'mobile', result: 'refused', reason: st.reason });
     return { code: 429, body: { ok: false, error: 'conductor-unavailable', reason: st.reason, conductor: st.id, rejected } };
   }
-  const message = lines.length === 1 ? '[board] ' + lines[0].line
-    : `[board] ${lines.length} replies from the board, one per line:\n` + lines.map(l => l.line).join('\n');
+  const message = lines.map(l => '[board] ' + l.line).join('\n');
   let out;
   try {
     out = await withTimeout(SEND(st.id, message, {
@@ -290,13 +297,20 @@ async function actBatch({ items, who } = {}) {
   } catch (e) { out = { ok: false, error: 'SEND_THREW', reason: e.message }; }
   const at = new Date().toISOString();
   const result = out.ok ? (out.delivered ? 'delivered' : 'queued') : 'failed';
+  // One summary record for the batch, then the per-line records the Conductor's index reads (id + kind).
+  audit({ at, kind: 'batch', batch, n: lines.length, ids: lines.map(l => l.id), who: who || 'mobile', conductor: st.id, result, reason: out.reason || out.error || null });
   for (const l of lines) {
     audit({ at, kind: l.kind, id: l.id, target: l.target, line: l.line, batch, conductor: st.id, who: who || 'mobile', result, reason: out.reason || out.error || null });
     if (out.ok) { recordActed(l.id, l.kind); closeBatonNote(board, l, l.kind); }
   }
   log(`${result}: batch of ${lines.length}`);
   if (!out.ok) return { code: 429, body: { ok: false, error: 'send-failed', reason: out.reason || out.error || 'the send did not complete', rejected } };
-  return { code: 200, body: { ok: true, sent: lines.length, rejected, message, delivered: !!out.delivered, queued: !!out.queued, conductor: st.id, at } };
+  const body = { ok: true, sent: lines.length, n: lines.length, ids: lines.map(l => l.id), rejected, message, delivered: !!out.delivered, queued: !!out.queued, conductor: st.id, at, batch };
+  if (bid) {
+    BATCHES.set(bid, body);
+    while (BATCHES.size > 200) BATCHES.delete(BATCHES.keys().next().value);
+  }
+  return { code: 200, body };
 }
 
 async function view() {
@@ -309,7 +323,7 @@ async function view() {
   try {
     recent = fs.readFileSync(AUDIT, 'utf8').trim().split('\n').slice(-60)
       .map(l => { try { return JSON.parse(l); } catch { return null; } })
-      .filter(r => r && r.result !== 'refused')
+      .filter(r => r && r.result !== 'refused' && r.kind !== 'batch')
       .map(r => ({ at: r.at, id: String(r.id), kind: r.kind, result: r.result }));
   } catch {}
   const actedMap = readActed();

@@ -1,5 +1,23 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.11
+
+**Board replies go as one message.** Every tap on the Board (Done, Yes, Skip, an answer) is now queued instead of
+sent on its own. The queue goes to your Conductor as a single message, one `[board]` line per card, when you tap
+**Send all as one**, when you close the Board by any route, or the next time you open the app if it was closed
+first. A queued card shows what you chose and can be undone until then, and a retry after a dropped connection
+is never delivered twice. The old opt-in Batch switch is gone.
+
+**More room for the list on a phone.** Refresh is now the ↻ in the Board's title row, search and the day chips
+share one row, and in compact density the footer Done gives way to the X at the top. A day chip now filters the
+"For you" cards too, and the list says how many older ones it is holding back, with one tap to show them all. The
+Handled count now matches what tapping it shows. A session you open while the app is still starting is no longer
+covered by the first screen.
+
+**Updates on locked-down Windows.** Where Windows refuses the updater's first way of starting the installer (seen on
+Windows Server as a standard user), it now uses a one-off scheduled task instead, and the tray icon comes back
+after the update if it was running before.
+
 ## 0.2.10
 
 **Opens where you left off.** A fresh start of the app no longer shows an empty page behind the session list.

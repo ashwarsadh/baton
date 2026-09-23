@@ -935,7 +935,7 @@ async function handle(req, res) {
   if (p === '/api/board/act-batch' && req.method === 'POST') {
     let body; try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { ok: false, error: 'bad json' }); }
     try {
-      const r = await board.actBatch({ items: body && body.items, who: 'mobile' });
+      const r = await board.actBatch({ items: body && body.items, bid: body && body.bid, who: 'mobile' });
       return json(res, r.code, r.body);
     } catch (e) {
       log('board batch failed: ' + e.message);

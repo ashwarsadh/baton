@@ -3,12 +3,20 @@
 
   // ONE predicate for showing a card AND counting its chip, so a chip never promises more (or less) than
   // it shows. The server's header counts (mobile/board.js) require this same object. No age cut-off by
-  // default: a lane waiting two weeks needs you more than one waiting two days.
+  // default: a lane waiting two weeks needs you more than one waiting two days. A day chip you pick
+  // filters EVERY card, For-you cards included (their age comes from ts); the list then says how many
+  // older ones it is holding back, with one tap to show them (#board-older).
   const FINISHED = ['done', 'closed', 'failed', 'dropped'];
   const Filter = {
     FINISHED,
     isDone: (r) => !!(r && (r.acted || r.handled)),
     isInbox: (r) => !!r && r.n != null && !r.bucket,
+    /** Days since the item arrived: the row's own age, else from its ts; null when neither is known. */
+    ageOf: (r, now = Date.now()) => {
+      if (r.age != null) return r.age;
+      const t = r.ts ? Date.parse(r.ts) : NaN;
+      return isNaN(t) ? null : (now - t) / 86400000;
+    },
     hay: (r) => (Filter.isInbox(r) ? ['#' + r.n, r.ask, r.text, r.note, r.project] : [r.title, r.group, r.project, r.ask, r.state])
       .map(x => x == null ? '' : String(x)).join(' ').toLowerCase(),
     /** f: { bucket: 'all' | 'inbox' | 'ask:decide|do|fyi|none' | a row bucket, days, project, q, showHandled } */
@@ -19,13 +27,13 @@
       if (Filter.isDone(r) !== !!f.showHandled) return false;
       if (f.project && f.project !== 'all' && (r.project || '') !== f.project) return false;
       if (f.q && !Filter.hay(r).includes(String(f.q).toLowerCase())) return false;
+      if (f.days != null) { const a = Filter.ageOf(r); if (a != null && a > f.days) return false; }
       if (Filter.isInbox(r)) {
         if (r.status !== 'open') return false;
         if (bucket === 'all' || bucket === 'inbox') return true;
         return bucket.startsWith('ask:') && (r.ask_kind || 'none') === bucket.slice(4);
       }
       if (bucket !== 'all' && r.bucket !== bucket) return false;
-      if (f.days != null && r.age != null && r.age > f.days) return false;
       return true;
     },
     count: (list, f) => (list || []).filter(r => Filter.matches(r, f)).length,
@@ -43,77 +51,104 @@
     answerFor: null,
     goalsOpen: false,
     goalsDoneOpen: false,
-    batch: false,
     queue: [],
+    flushing: false,
   };
 
-  const QUEUE_KEY = 'baton_board_queue', BATCH_KEY = 'baton_board_batch';
+  /* ---------- the reply queue ------------------------------------------------------------------------
+     Every tap (Done / Yes / Skip / an Answer) QUEUES; nothing is sent per tap. The queue goes to
+     /api/board/act-batch as ONE message, one "[board] " line per card, when:
+       - you tap "Send all as one" on the pending bar;
+       - the board closes, BY ANY PATH (X, swipe, Back, Done, Open session): watched on the sheet's own
+         `hidden` class, not wired to each close control, so a close path added later is covered;
+       - the app opens with a queue left over (the page was killed before it went), or comes back to
+         the foreground with one (a batch that failed earlier).
+     One message instead of many small ones: each message wakes the Conductor, so a batch costs one
+     turn, not one per card. It lives in localStorage, so a killed page loses
+     nothing. A batch carries an id (`bid`) the server remembers, so a retry after a lost response can
+     never deliver it twice. */
+  const QUEUE_KEY = 'baton_board_queue';
   function migrateKey(oldKey, newKey) {
     try { const v = localStorage.getItem(oldKey); if (v != null && localStorage.getItem(newKey) == null) localStorage.setItem(newKey, v); localStorage.removeItem(oldKey); } catch {}
   }
-  migrateKey('baton-board-queue', QUEUE_KEY); migrateKey('baton-board-batch', BATCH_KEY); migrateKey('baton-board-expanded', 'baton_board_expanded');
+  migrateKey('baton-board-queue', QUEUE_KEY); migrateKey('baton-board-expanded', 'baton_board_expanded');
+  try { localStorage.removeItem('baton-board-batch'); localStorage.removeItem('baton_board_batch'); } catch {}   // the old opt-in switch: queueing is always on now
   try { for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k && k.startsWith('baton-board-draft-')) migrateKey(k, 'baton_board_draft_' + k.slice(18)); } } catch {}
-  try { B.queue = JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]') || []; } catch {}
-  try { B.batch = localStorage.getItem(BATCH_KEY) === '1'; } catch {}
+  try {
+    const q = JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]');
+    B.queue = (Array.isArray(q) ? q : []).filter(x => x && x.id).map((x, i) => ({ kind: x.kind, id: String(x.id), text: x.text || '', at: x.at || Date.now() + i }));
+  } catch {}
   function saveQueue() {
-    try { localStorage.setItem(QUEUE_KEY, JSON.stringify(B.queue)); localStorage.setItem(BATCH_KEY, B.batch ? '1' : '0'); } catch {}
+    try { B.queue.length ? localStorage.setItem(QUEUE_KEY, JSON.stringify(B.queue)) : localStorage.removeItem(QUEUE_KEY); } catch {}
   }
-  const queued = (id) => B.queue.find(q => q.id === id) || null;
+  const queued = (id) => B.queue.find(q => q.id === String(id)) || null;
   function enqueue(kind, id, text, quiet) {
-    B.queue = B.queue.filter(q => q.id !== id).concat([{ kind, id, text: text || '' }]);
+    B.posts++;                         // the tap did something: the dead-tap watchdog reads this
+    id = String(id);
+    B.queue = B.queue.filter(q => q.id !== id).concat([{ kind, id, text: text || '', at: Date.now() }]);   // re-answering a card replaces its line
     saveQueue();
+    pendingBar();
     if (quiet) return;
-    toast('Queued — ' + B.queue.length + ' repl' + (B.queue.length === 1 ? 'y' : 'ies') + ' waiting to send');
-    render();
+    toast('Queued — ' + B.queue.length + ' pending; they go as one message when you close the board');
+    if (B.data) render();
   }
-  /** Bulk: queue one line per visible card, switch batch on; nothing goes until "Send N replies". */
+  /** Bulk: one line per visible card, queued like any other tap. */
   function enqueueAll(kind, ids) {
     for (const id of ids) enqueue(kind, id, '', true);
-    B.batch = true;
+    toast('Queued ' + ids.length + ' — ' + B.queue.length + ' pending; they go as one message when you close the board');
+    if (B.data) render();
+  }
+  function unqueue(id) {
+    const q = queued(id);
+    B.queue = B.queue.filter(x => x.id !== String(id));
     saveQueue();
-    toast('Queued ' + ids.length + ' — tap "Send ' + B.queue.length + ' repl' + (B.queue.length === 1 ? 'y' : 'ies') + '" to send them as one message');
-    render();
+    if (q && q.kind === 'answer' && q.text) saveDraft(q.id, q.text);   // taken back, not thrown away
+    pendingBar();
+    if (B.data) render();
   }
 
-  function queueBar() {
-    let el = $('board-queue');
-    if (!el) {
-      el = document.createElement('div');
-      el.id = 'board-queue';
-      el.className = 'board-queue';
-      $('board-list').parentNode.insertBefore(el, $('board-list'));
-      el.addEventListener('click', (e) => {
-        if (e.target.closest('#board-queue-send')) sendQueue();
-        if (e.target.closest('#board-queue-clear')) { B.queue = []; saveQueue(); render(); }
-      });
-    }
+  function pendingBar() {
+    const bar = $('board-pending');
+    if (!bar) return;
     const n = B.queue.length;
-    el.hidden = !n && !B.batch;
-    el.innerHTML = n
-      ? '<span>' + n + ' repl' + (n === 1 ? 'y' : 'ies') + ' queued — they go to the Conductor as one message.</span>'
-        + '<button class="bbtn b-yes" id="board-queue-send">Send ' + n + ' repl' + (n === 1 ? 'y' : 'ies') + '</button>'
-        + '<button class="linkish" id="board-queue-clear">clear</button>'
-      : '<span>Batch mode: taps are queued here and sent together.</span>';
+    bar.classList.toggle('hidden', !n);
+    $('board-pending-n').textContent = n + (n === 1 ? ' reply' : ' replies') + ' pending';
+    $('board-sendall').disabled = !!B.flushing;
+    $('board-sendall').textContent = B.flushing ? 'Sending…' : 'Send all as one';
   }
 
-  async function sendQueue() {
-    if (!B.queue.length || B.busy.__queue) return;
-    B.busy.__queue = Date.now();
-    const items = B.queue.slice();
+  /** Same batch, same id: a retry of an unchanged queue is recognised by the server and not re-sent. */
+  function batchId(batch) {
+    let h = 5381;
+    for (const ch of batch.map(q => q.id + '@' + q.at + ':' + q.kind).join(',')) h = ((h * 33) ^ ch.charCodeAt(0)) >>> 0;
+    return 'b' + batch.length + '-' + h.toString(36);
+  }
+  async function flush(why) {
+    if (B.flushing || !B.queue.length) return;
+    B.flushing = true; pendingBar();
+    const batch = B.queue.slice();
     try {
       const r = await api('/api/board/act-batch', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bid: batchId(batch), why, items: batch.map(q => ({ kind: q.kind, id: q.id, text: q.text })) }),
       });
-      const bad = new Set((r.rejected || []).map(x => String(x.id)));
-      B.queue = B.queue.filter(q => bad.has(String(q.id)));
+      // Remove exactly what went: a tap made while this was in flight stays queued.
+      const went = new Set(batch.map(q => q.id + '@' + q.at));
+      const rejected = new Set((r.rejected || []).map(x => String(x.id)));
+      B.queue = B.queue.filter(q => !went.has(q.id + '@' + q.at));
       saveQueue();
-      for (const q of items) if (q.kind === 'answer' && !bad.has(String(q.id))) saveDraft(q.id, '');
-      toast('Sent ' + r.sent + ' repl' + (r.sent === 1 ? 'y' : 'ies') + ' in one message' + (bad.size ? ' — ' + bad.size + ' no longer on the board' : ''));
-      await loadBoard();
+      for (const q of batch) if (q.kind === 'answer' && !rejected.has(q.id)) saveDraft(q.id, '');
+      const n = r.n != null ? r.n : r.sent;
+      toast('Sent ' + n + (n === 1 ? ' reply' : ' replies') + ' as one message'
+        + (rejected.size ? ' (' + rejected.size + ' no longer on the board, dropped)' : ''));
+      if (B.data) loadBoard();
     } catch (e) {
-      toast('Not sent: ' + e.message + ' — your replies are still queued', true);
-    } finally { delete B.busy.__queue; }
+      toast('Not sent: ' + e.message + ' — ' + B.queue.length + ' kept, they go next time', true);
+    } finally {
+      B.flushing = false; pendingBar();
+    }
   }
+  window.batonBoardFlush = flush;
 
   const EXP_KEY = 'baton_board_expanded';
   try {
@@ -245,8 +280,9 @@
       b.onclick = () => { B.days = n; B.showHandled = false; render(); };
       dw.appendChild(b);
     }
-    const nDone = Filter.count(d.rows, filt({ bucket: 'all', showHandled: true }))
-      + Filter.count(d.inbox, filt({ bucket: 'all', showHandled: true }));
+    // The count is the list a tap on it shows (this bucket, day chip, project and search). It counted
+    // bucket 'all' while the list applied the bucket too, so the chip promised cards it then did not show.
+    const nDone = Filter.count(d.rows, filt({ showHandled: true })) + Filter.count(d.inbox, filt({ showHandled: true }));
     if (nDone) {
       const b = document.createElement('button');
       b.className = 'chip b-handled' + (B.showHandled ? ' on' : '');
@@ -254,12 +290,6 @@
       b.onclick = () => { B.showHandled = !B.showHandled; render(); };
       dw.appendChild(b);
     }
-    const bt = document.createElement('button');
-    bt.className = 'chip' + (B.batch ? ' on' : '');
-    bt.title = 'Queue your taps and send them to the Conductor as one message';
-    bt.innerHTML = 'Batch' + (B.queue.length ? ' <span class="n">' + B.queue.length + '</span>' : '');
-    bt.onclick = () => { B.batch = !B.batch; saveQueue(); render(); };
-    dw.appendChild(bt);
   }
 
   function projectChips(d) {
@@ -270,8 +300,8 @@
       pw = document.createElement('div');
       pw.id = 'board-projects';
       pw.className = 'chips board-projects';
-      const days = $('board-days');
-      days.parentNode.insertBefore(pw, days.nextSibling);
+      const after = document.querySelector('#view-board .board-filters') || $('board-days');   // under the search + days row, not inside it
+      after.parentNode.insertBefore(pw, after.nextSibling);
     }
     pw.hidden = list.length < 2;
     pw.innerHTML = '';
@@ -357,9 +387,10 @@
   function actionsHtml(id, kinds, done, handled) {
     const q = !handled && !done && queued(id);
     if (q) {
-      return '<div class="bcard-done"><span class="bpill wait">Queued: ' + esc(LABELS[q.kind] || q.kind) + '</span>'
-        + (q.text ? '<span>' + esc(String(q.text).slice(0, 120)) + '</span>' : '')
-        + '<button class="linkish" data-unqueue="' + esc(id) + '">remove from batch</button></div>';
+      // Composed, not sent: it goes with the others as ONE message; until then it can be taken back.
+      return '<div class="bcard-done"><span class="bpill wait">Queued: ' + esc(String(LABELS[q.kind] || q.kind).replace(/[….]+$/, '')) + '</span>'
+        + (q.text ? '<span class="bq-text">' + esc(String(q.text).slice(0, 140)) + '</span>' : '')
+        + '<button class="linkish" data-unqueue="' + esc(id) + '">undo</button></div>';
     }
     if (handled) {
       return '<div class="bcard-done"><span class="bpill ok">Handled by the Conductor</span>'
@@ -512,7 +543,7 @@
     staleBanner(d.bundle);
     conductorBanner();
     chips();
-    queueBar();
+    pendingBar();
 
     const inbox = (d.inbox || []).filter(r => Filter.matches(r, filt()));
     const rows = (d.rows || []).filter(r => Filter.matches(r, filt()));
@@ -526,6 +557,13 @@
         + '<p>Only you can do these — nothing else on this page needs you.</p>'
         + (fyi.length && !B.showHandled ? '<button class="linkish" data-bulk="fyi">Clear all FYI (' + fyi.length + ')</button>' : '') + '</div>');
       html.push(inbox.map(inboxCard).join(''));
+    }
+    // An unanswered ask must never vanish silently because it is old: say how many the day chip is
+    // holding back, with the one tap that shows them.
+    if (!B.showHandled && B.days != null) {
+      const older = Filter.count(d.inbox, filt({ days: null })) - inbox.length;
+      if (older > 0) html.push('<button class="bolder" id="board-older">' + older + ' older than ' + B.days
+        + 'd waiting for you — show all</button>');
     }
     if ((B.bucket === 'all' || B.bucket === 'inbox') && !B.showHandled) { const dr = inboxDrawers(d); if (dr) html.push(dr); }
     for (const k of BUCKETS) {
@@ -559,27 +597,7 @@
     }
   }
 
-  async function send(kind, id, text) {
-    if (B.busy[id] && Date.now() - B.busy[id] < 30000) { toast('That one is still sending…'); return; }
-    B.busy[id] = Date.now();
-    const card = $('board-list').querySelector('.bcard[data-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
-    if (card) card.classList.add('sending');
-    try {
-      B.posts++;
-      const r = await api('/api/board/act', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind: kind, id: id, text: text || '' }),
-      });
-      toast(r.delivered ? 'Sent — card cleared' : 'Queued for the Conductor — card cleared');
-      await loadBoard();
-    } catch (e) {
-      toast('Not sent: ' + e.message, true);
-      if (/conductor-unavailable|send-failed/.test(e.message)) loadBoard();
-    } finally {
-      delete B.busy[id];
-      if (card) card.classList.remove('sending');
-    }
-  }
+  // (There is no per-tap send: every tap queues, and flush() is the only path to the Conductor.)
 
   $('board-list').addEventListener('click', (e) => {
     const open = e.target.closest('[data-open]');
@@ -629,12 +647,12 @@
       if (ids.length) enqueueAll(bulk.dataset.bulk === 'fyi' ? 'done' : 'yes', ids.filter(id => !queued(id)));
       return;
     }
+    if (e.target.closest('#board-older')) { B.days = null; render(); return; }
     const unq = e.target.closest('[data-unqueue]');
-    if (unq) { B.queue = B.queue.filter(q => q.id !== unq.dataset.unqueue); saveQueue(); render(); return; }
+    if (unq) { unqueue(unq.dataset.unqueue); return; }
     const b = e.target.closest('button[data-act]');
     if (!b) return;
     const id = b.dataset.target, kind = b.dataset.act;
-    if (B.batch && kind !== 'answer') { enqueue(kind, id); return; }
     if (kind !== 'answer') {
       const before = B.posts;
       setTimeout(() => {
@@ -646,7 +664,7 @@
       openAnswer(id, cardTitle(card), cardAsk(card));
       return;
     }
-    send(kind, id);
+    enqueue(kind, id);                 // queued, sent with the others as one message
   });
 
   function landOn(msg) {
@@ -729,7 +747,6 @@
     askBox.hidden = !ask;
     const t = $('answer-text');
     t.value = loadDraft(id);
-    $('answer-send').textContent = B.batch ? 'Add to batch' : 'Send';
     $('answer-note').textContent = t.value ? 'Draft restored.' : '';
     showSheet($('answersheet'));
     growAnswer();
@@ -747,25 +764,12 @@
     const id = B.answerFor, text = $('answer-text').value;
     if (!id) return;
     if (!text.trim()) { $('answer-note').textContent = 'Nothing to send yet.'; $('answer-text').focus(); return; }
-    if (B.batch) {
-      saveDraft(id, text);
-      B.answerFor = null;
-      hideSheet($('answersheet'));
-      enqueue('answer', id, text);
-      return;
-    }
-    $('answer-send').disabled = true;
-    $('answer-note').textContent = 'Sending…';
-    const before = B.posts;
-    await send('answer', id, text);
-    $('answer-send').disabled = false;
-    if (B.posts > before && !B.busy[id]) {
-      saveDraft(id, '');
-      B.answerFor = null;
-      hideSheet($('answersheet'));
-    } else {
-      $('answer-note').textContent = 'Not sent — your text is still here. Try again.';
-    }
+    // Queued with the others, not sent alone. The draft is kept until the batch is delivered (flush
+    // clears it), so a failed batch loses nothing.
+    saveDraft(id, text);
+    B.answerFor = null;
+    hideSheet($('answersheet'));
+    enqueue('answer', id, text);
   }
 
   $('answer-text').addEventListener('input', () => {
@@ -823,6 +827,20 @@
   window.boardWaiting = async () => {
     const d = await api('/api/board');
     B.data = d;
-    return Filter.count(d.inbox, filt({ bucket: 'inbox', showHandled: false }));
+    return Filter.count(d.inbox, filt({ bucket: 'inbox', showHandled: false, days: null }));
   };
+
+  // Flush triggers. Closing the board by ANY path sends the queue: observed on the sheet's own `hidden`
+  // class rather than wired into each close control.
+  $('board-sendall').onclick = () => flush('send-all');
+  new MutationObserver(() => {
+    if ($('view-board').classList.contains('hidden') && B.queue.length) flush('board-closed');
+  }).observe($('view-board'), { attributes: true, attributeFilter: ['class'] });
+  pendingBar();
+  // Left over from a page that was killed before it sent: send on this open, once boot's own requests
+  // have had the link first. Also when the app comes back to the foreground with the board closed.
+  if (B.queue.length) setTimeout(() => { if ($('view-board').classList.contains('hidden')) flush('reopen'); }, 4000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && B.queue.length && $('view-board').classList.contains('hidden')) flush('resume');
+  });
 })();

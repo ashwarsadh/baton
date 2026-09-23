@@ -112,6 +112,46 @@ const check = (ok, name, extra) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${name
   const script = fs.readFileSync(a.script, 'utf8');
   check(a.dry && /\/VERYSILENT \/SUPPRESSMSGBOXES \/NORESTART \/DIR="/.test(script) && /bin\\baton\.js" start|bin\/baton\.js" start/.test(script), 'the apply script installs silently over this folder, then starts Baton', script);
 
+  // Who starts the apply script. WMI first; refused (ReturnValue 2, as measured for a standard user on
+  // Windows Server) it goes to a one-shot scheduled task; both refused, a detached child.
+  const plan = U.launchPlan('C:\\x\\apply-update.cmd');
+  check(plan.map(p => p.via).join() === 'wmi,task' && plan[1].args[0].includes('/IT') && plan[1].args[0][plan[1].args[0].indexOf('/TN') + 1] === U.UPDATE_TASK
+    && plan[1].args[1].join(' ') === '/Run /TN ' + U.UPDATE_TASK, 'launch order: WMI, then a one-shot interactive task that is created and run', plan);
+  check(U.launchPlan('C:\\' + 'x'.repeat(260) + '\\a.cmd')[1].args === null, 'a /TR over 261 characters skips the task route');
+  const runs = [];
+  const fake = (answers) => (exe, args) => { runs.push(exe + ' ' + args[0]); return answers[exe + ' ' + args[0]] || { status: 0, stdout: '' }; };
+  let L = U.launch('C:\\x\\a.cmd', { run: fake({ 'powershell.exe -NoProfile': { status: 0, stdout: '2 \r\n' } }), detached: () => 99 });
+  check(L.via === 'task' && runs.join('|') === 'powershell.exe -NoProfile|schtasks.exe /Create|schtasks.exe /Run', 'WMI refused (2): the task route starts it', { L, runs });
+  runs.length = 0;
+  L = U.launch('C:\\x\\a.cmd', { run: fake({ 'powershell.exe -NoProfile': { status: 0, stdout: '0 4242' } }), detached: () => 99 });
+  check(L.via === 'wmi' && runs.length === 1, 'WMI accepted (0): nothing else is tried', { L, runs });
+  runs.length = 0;
+  L = U.launch('C:\\x\\a.cmd', { run: fake({ 'powershell.exe -NoProfile': { status: 0, stdout: '2' }, 'schtasks.exe /Create': { status: 1, stderr: 'Access is denied.' } }), detached: () => 99 });
+  check(L.via === 'detached' && L.pid === 99 && !runs.includes('schtasks.exe /Run') && /task: Access is denied/.test(L.tried.join()), 'task not created: never run, the detached child is the last resort', { L, runs });
+
+  // After the restart into the new version: recorded once, task removed, tray back only if it was on.
+  const stFile = path.join(process.env.BATON_HOME, 'state', 'update.json');
+  const cur = require('../package.json').version;
+  const land = (st, trayUp) => {
+    fs.mkdirSync(path.dirname(stFile), { recursive: true });
+    fs.writeFileSync(stFile, JSON.stringify(st));
+    const did = [];
+    const r = U.landed({ isTrayRunning: () => trayUp, openTray: () => did.push('tray'), run: (exe, a) => { did.push(exe + ' ' + a.join(' ')); return { status: 0 }; } });
+    return { r, did, after: JSON.parse(fs.readFileSync(stFile, 'utf8')) };
+  };
+  let x = land({ trayRunning: true, installing: { from: '0.0.1', to: cur } }, false);
+  check(x.r && x.r.landedAt && x.r.trayRestarted === true && x.did.includes('tray') && !x.after.installing && x.after.lastInstalled.to === cur,
+    'landed: recorded, installing cleared, and the tray that was running is started again', x);
+  check(process.platform !== 'win32' || x.did.includes('schtasks.exe /Delete /TN ' + U.UPDATE_TASK + ' /F'), 'landed: the one-shot task is deleted', x.did);
+  x = land({ trayRunning: true, installing: { from: '0.0.1', to: cur } }, true);
+  check(!x.did.includes('tray') && !x.r.trayRestarted, 'a tray already back is not started twice', x);
+  x = land({ trayRunning: false, installing: { from: '0.0.1', to: cur } }, false);
+  check(!x.did.includes('tray'), 'no tray before the update: none after', x);
+  x = land({ trayRunning: true, installing: { from: cur, to: '99.0.0' } }, false);
+  check(x.r === null && x.did.length === 0 && x.after.installing, 'still on the old version (install failed): nothing recorded, nothing started', x);
+  x = land({ trayRunning: true, lastInstalled: { to: cur } }, false);
+  check(x.r === null && x.did.length === 0, 'nothing being installed: landed() does nothing (it runs at every start)', x);
+
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}
   console.log(failed ? `\n${failed} check(s) failed` : '\nall updater checks passed');
   process.exit(failed ? 1 : 0);

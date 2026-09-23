@@ -836,6 +836,7 @@ function drawer(open) {
 
 const navStack = [];
 let navQuiet = false;
+let navTouched = 0;          // every navigation, the user's or a restore's: boot yields to any of them
 let navSkip = 0;
 let exitArmed = 0;
 
@@ -850,6 +851,7 @@ function navSnapshot() {
 const navSame = (a, b) => a && b && a.chat === b.chat && a.sheet === b.sheet && a.drawer === b.drawer;
 
 function navRecord() {
+  navTouched++;
   if (navQuiet) return;
   const snap = navSnapshot();
   if (navSame(navStack[navStack.length - 1], snap)) return;
@@ -1093,8 +1095,8 @@ function renderHeader(meta) {
 // the most recently active one. The Board is asked for at most FIRST_SCREEN_WAIT_MS; a slow or disabled
 // Board just means the session. Anything you opened while the list loaded wins.
 const FIRST_SCREEN_WAIT_MS = 2500;
-async function firstScreen() {
-  const untouched = () => !state.open && !visibleSheetId() && !$('drawer').classList.contains('open');
+async function firstScreen(touched0 = navTouched) {
+  const untouched = () => !state.open && !visibleSheetId() && !$('drawer').classList.contains('open') && navTouched === touched0;
   let waiting = 0;
   if (typeof window.boardWaiting === 'function') {
     waiting = await Promise.race([
@@ -2998,6 +3000,7 @@ window.__batonT = { nav: performance.timeOrigin };
 const tmark = (k) => { try { window.__batonT[k] = Math.round(performance.now()); } catch {} };
 
 (async function boot() {
+  const bootTouched = navTouched;
   try { history.replaceState({ ago: 0 }, ''); history.pushState({ ago: 0 }, ''); } catch {}
   const registerSW = () => { if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {}); };
 
@@ -3033,16 +3036,16 @@ const tmark = (k) => { try { window.__batonT[k] = Math.round(performance.now());
         .then(r => { if (!r.ok && r.reason !== 'not-granted' && r.reason !== 'denied') console.warn('push re-subscribe:', r); })
         .catch(e => console.warn('push re-subscribe failed:', e && e.message));
     }
+    // Boot's LAST step is a navigation, and boot ends seconds after the cached list is on screen and
+    // tappable (up to ~18 s measured on a phone). So it yields to anything done since: a sheet already
+    // open (the #board link, a quick tap), or any navigation at all. Without that, a session opened from
+    // the cached list was covered by the drawer and then by the ?s= notification target.
     const want = new URLSearchParams(location.search).get('s');
-    if (want) {
-      history.replaceState(null, '', location.pathname);
-      openChat(want);
-    } else if (!visibleSheetId()) {
-      window.__batonFirstScreen = await firstScreen();
-    }
-    // Boot finishes after the cached list is on screen, so a sheet may already be open (the #board link
-    // opens one at 'load', and so does a quick tap). Opening the drawer over it recorded a history step,
-    // and the first X / Done / swipe then closed only that hidden drawer: the control looked dead.
+    if (want) history.replaceState(history.state, '', location.pathname + location.hash);
+    const userMoved = navTouched !== bootTouched || !!visibleSheetId() || !!state.open;
+    if (userMoved) { /* their navigation stands */ }
+    else if (want) openChat(want);
+    else firstScreen(bootTouched).then(r => { window.__batonFirstScreen = r; });
     watchForUpdates();
   } catch (e) {
     setTimeout(registerSW, 0);
