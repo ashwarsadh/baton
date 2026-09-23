@@ -44,6 +44,7 @@
 | Organizer | `lib/organizer.js` |
 | Conductor | `lib/master-protocol.js` (protocol + rule sections), `lib/conductor-access.js` |
 | Context hygiene | `lib/hygiene.js` (verdicts, safe auto-/compact), `lib/archive.js` (archive candidates) |
+| Idle-CLI reaper | `lib/reaper.js` (guards run inside the app; releases through its own `teardownQuery`; dry first) |
 | Overviews and roles | `lib/engine.js` (pluggable model engine, off by default), `lib/summarize.js`, `lib/roles.js` |
 | Directives | `lib/directions.js` |
 | Accounts | `lib/account-sync.js`, `lib/account-sync/*`, `lib/account-scope.js`, `mobile/accounts.js` |

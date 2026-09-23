@@ -1,5 +1,13 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.4
+
+**Idle-CLI reaper** (optional, off by default). Every open session keeps a Claude Code process of about 400 MB,
+used or not. The reaper frees the ones idle for 3 hours or more through Claude's own teardown; your next message
+resumes the session with its full history. It never touches a session that is running, unread, waiting on you,
+queued, on Remote Control (unless you allow it), owning a goal or in an await. For its first 24 hours it only logs
+what it would free (`baton reaper` shows a pass now).
+
 ## 0.2.3
 
 Windows: no Baton command opens a console window any more. `baton setup`, `baton debugger` and the

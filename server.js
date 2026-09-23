@@ -183,6 +183,19 @@ async function goalsTick() {
 // Context hygiene (lib/hygiene.js): runs inside the goals cycle — index -> goals -> hygiene -> board — but
 // only every hygiene.intervalMinutes (30). Report files always; /compact only with module autoCompact, typed
 // through the composer inside the UI lane. It also writes the daily wake roll-up and ARCHIVE-CANDIDATES.md.
+// Idle-CLI reaper (lib/reaper.js): every 10 min, release the CLI of a session idle 3 h+ that passes every
+// guard, through the app's own teardown. Dry for its first 24 h (state/reaper.json), then live.
+const REAPER_MS = 10 * 60000;
+let lastReaper = null;
+async function reaperTick() {
+  if (!config.mod('reaper')) return;
+  try {
+    const r = await require('./lib/reaper').tick();
+    lastReaper = { at: r.at, mode: r.mode, clis: r.clis, eligible: r.eligible, reaped: r.reaped, mb: r.mb };
+    if (r.reaped || r.eligible) orch.log(`reaper(${r.mode}): ${r.eligible} eligible, ${r.reaped} released, ${r.mb} MB`);
+  } catch (e) { lastReaper = { at: new Date().toISOString(), error: e.message }; orch.log('reaper error: ' + e.message); }
+}
+
 let lastHygiene = null;
 async function hygieneTick() {
   if (!config.mod('hygiene')) return;
@@ -626,6 +639,7 @@ async function evictWedgedHolder(reason) {
     setInterval(goalsTick, GOALS_MS);
     setTimeout(goalsTick, 120000);
     setInterval(directivesTick, DIRECTIVES_MS);
+    setInterval(() => serialise(reaperTick), REAPER_MS);
 
     try {
       if (config.mod('app')) require('./mobile')();

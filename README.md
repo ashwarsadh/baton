@@ -281,6 +281,7 @@ Everything is in **Settings** (the ⚙ in the session list, or *Settings* in the
 | Directives | off | Daily (05:00): your own words per project, recovered verbatim from the digests, into `<project>/DIRECTIVES.md` — never overwrites a hand-written file; hand edits below its last line survive (`baton directives --dry-run`; tune under `directives`) |
 | Context hygiene | on | Every 30 min: what each session's context needs — compact, write state first, rotate, new session, archive, hold — into `HYGIENE.md` / `hygiene.json` (shown on the Board), plus `ARCHIVE-CANDIDATES.md` and a daily wake roll-up. Writes files only (`baton hygiene`; tune under `hygiene`, `archive`) |
 | Auto-compact | off | Types `/compact` into a session only in its last warm cache cycle, mid-task, with its state authored on disk, idle and confirmed idle by the app — never cold, running or awaiting; capped per cycle, verified later |
+| Idle-CLI reaper | off | Every open session keeps a CLI process (~400 MB with its tools) whether you use it or not. Frees the ones idle 3 h or more through Claude's own teardown; the next message resumes the session with its history. Never touches a session that is running, unread, waiting on you, on Remote Control, queued, owns a goal or is in an await. Only logs what it would free for its first 24 h (`baton reaper`; tune under `reaper`) |
 
 **Idle gate.** Some actions drive the Claude Desktop window. Baton waits until you have not touched the
 keyboard or mouse for a few seconds (15 by default), so it never types into what you're doing. When the idle

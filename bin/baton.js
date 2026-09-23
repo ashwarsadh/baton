@@ -208,6 +208,7 @@ ${C.b('Daemon')}
   baton debugger           switch on Claude Desktop's main-process debugger (Windows)
   baton mcp install|remove register the orchestrator tools with Claude Code
   baton hooks install|remove|status [--dry-run]   optional Stop hook: sessions may not end on a question
+  baton reaper [--dry|--live] [--rc-too] [ids]    one idle-CLI reaper pass now (default: its current mode)
                            they can answer themselves (never installed by default; backs up settings.json)
   baton accounts           the Claude accounts on this computer and what a sync would change
   baton accounts sync [--apply] [--two-way] [--to <n>]   preview (default) or write the account sync
@@ -372,6 +373,7 @@ async function accountsCmd() {
       return void spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'scripts', 'enable-debugger.ps1')], { stdio: 'inherit', windowsHide: true });
     case 'mcp': return mcpInstall(args[1] === 'remove');
     case 'hooks': return void require('../hooks/install').cli(args.slice(1));
+    case 'reaper': return void (await require('../lib/reaper').cli(args.slice(1)));
     case 'accounts': return accountsCmd();
     case 'index': return require('../lib/index-cli').run(args.slice(1));
     case 'hygiene': return void (await require('../lib/hygiene').cli(args.slice(1)));
