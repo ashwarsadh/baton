@@ -154,7 +154,7 @@ function autostart(action) {
 function tray() {
   if (!WIN) return console.log('The tray icon is Windows-only for now. Use `baton open`.');
   const ps = path.join(ROOT, 'scripts', 'tray.ps1');
-  spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ps], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  require('../lib/launch').spawnHidden('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ps]);
   console.log(C.g('Tray icon started (look for the baton in the notification area).'));
 }
 

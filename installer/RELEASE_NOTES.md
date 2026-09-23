@@ -1,5 +1,13 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.12
+
+**No more console windows.** On Windows, starting Baton in the background (`baton start`, `baton open`, the Start-menu
+shortcut, a self-repair, and the restart after an automatic update) could leave an empty "node" console window on
+the desktop. Closing it stopped Baton. Every background start now goes through the same hidden launcher the sign-in
+task uses, so no window appears. The update that installs 0.2.12 is still started by the version you have now, so
+one brief window may appear during it; later updates do not show one.
+
 ## 0.2.11
 
 **Board replies go as one message.** Every tap on the Board (Done, Yes, Skip, an answer) is now queued instead of
