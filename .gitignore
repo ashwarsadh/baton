@@ -1,0 +1,14 @@
+node_modules/
+*.log
+*.bak
+*.bak-*
+.env
+# runtime data lives in ~/.baton, never in the repo
+state/
+results/
+uploads/
+auth/
+secret.json
+push.json
+subusers.json
+settings.json

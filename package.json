@@ -1,0 +1,19 @@
+{
+  "name": "baton-cc",
+  "version": "0.1.0",
+  "description": "Your Claude Code sessions, in your pocket: a phone + desktop client for Claude Desktop's Code tab with multi-session control, auto-resume and a master/worker orchestrator.",
+  "license": "MIT",
+  "bin": { "baton": "bin/baton.js" },
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/smoke.js"
+  },
+  "engines": { "node": ">=18" },
+  "os": ["win32", "darwin", "linux"],
+  "keywords": ["claude", "claude-code", "claude-desktop", "mobile", "remote", "orchestrator", "mcp", "agents"],
+  "dependencies": {
+    "qrcode": "^1.5.4",
+    "ws": "^8.18.0"
+  }
+}

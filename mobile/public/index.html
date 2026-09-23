@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#12110f">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#faf9f7">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Baton</title>
+<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+
+<div id="scrim" class="scrim hidden"></div>
+
+<aside id="drawer" class="drawer" aria-label="Sessions">
+  <div class="drawer-head">
+    <h1>Sessions</h1>
+    <button id="btn-board" class="icon-btn" title="Board — pending work" aria-label="Board">📋</button>
+    <button id="btn-routines" class="icon-btn" title="Routines" aria-label="Routines">⏱</button>
+    <button id="btn-accounts" class="icon-btn" title="Accounts — switch which Claude account the work runs on" aria-label="Accounts">👤</button>
+    <button id="btn-bell" class="icon-btn" title="Notifications" aria-label="Enable notifications">🔔</button>
+    <button id="btn-close-drawer" class="icon-btn" aria-label="Close">✕</button>
+  </div>
+
+  <div class="stats" id="stats"></div>
+  <div id="outbox" class="outbox" hidden></div>
+
+  <div class="search-row">
+    <div class="searchwrap">
+      <input id="search" type="text" placeholder="Search sessions" autocomplete="off" enterkeyhint="search">
+      <button id="search-clear" class="searchclear" type="button" aria-label="Clear search" hidden>&times;</button>
+    </div>
+    <button id="deep" class="deep hidden">Search inside conversations</button>
+  </div>
+
+  <nav class="chips" id="sortbar" aria-label="Sort"></nav>
+  <nav class="chips" id="folders" aria-label="Folders"></nav>
+
+  <ul class="sessions" id="sessions"></ul>
+  <div id="list-empty" class="empty hidden">No sessions match.</div>
+
+  <div class="drawer-foot">
+    <button id="btn-new" class="ghost primary">＋ New session</button>
+    <button id="btn-tasks" class="ghost">Task queue</button>
+  </div>
+  
+  <div id="buildline" class="buildline" hidden></div>
+</aside>
+
+
+<main id="main">
+  <header class="bar">
+    <button id="btn-menu" class="icon-btn" aria-label="Open sessions">☰</button>
+    <div class="bar-main">
+      <div class="bar-state"><span class="dot" id="chat-state" aria-hidden="true"></span><div class="bar-title" id="chat-title">Baton</div></div>
+      <button class="bar-sub" id="chat-sub" aria-label="Session settings"></button>
+    </div>
+    <button id="btn-work" class="icon-btn" title="Show working" aria-label="Toggle working steps">👁</button>
+    <button id="btn-chips" class="icon-btn" title="Background tasks" aria-label="Background tasks">&#9635;</button>
+    <button id="btn-cfg" class="icon-btn" aria-label="Session settings">⋯</button>
+  </header>
+
+  <div class="log" id="log">
+    <div class="empty" id="pick-hint">Open the menu to pick a session.</div>
+  </div>
+  
+  <button id="jump" class="jump" type="button" hidden aria-label="Jump to the end">&#8595;</button>
+
+  
+  
+  <div id="live" class="live" hidden></div>
+  <div id="acctswitch" class="blockerbox hidden"></div>
+  <div id="blocker" class="blockerbox hidden"></div>
+  <div id="suggestion" class="suggbox hidden"></div>
+  <div id="permission" class="permbox hidden"></div>
+  <div id="question" class="qbox hidden"></div>
+
+  <div class="composer" id="composer">
+    <div id="attachments" class="attachments hidden"></div>
+    <div class="composer-row">
+      <button id="btn-attach" class="icon-btn" aria-label="Attach file">＋</button>
+      <textarea id="input" rows="1" placeholder="Message…" enterkeyhint="enter"></textarea>
+      <button id="btn-send" class="send-btn" aria-label="Send">↑</button>
+    </div>
+  </div>
+  <input type="file" id="file" multiple hidden>
+</main>
+
+
+<section id="view-routines" class="sheet hidden" role="dialog" aria-modal="true" aria-label="Routines">
+  <div class="sheet-body">
+    <div class="grab"></div>
+    <h2>Routines</h2>
+    <div class="stats" id="routines-note"></div>
+    <div id="routines" class="routines"><div class="empty">Loading…</div></div>
+    <div id="routine-detail" class="routine-detail" hidden></div>
+    <div class="sheet-actions"><button id="btn-close-routines" class="ghost">Done</button></div>
+  </div>
+</section>
+
+<section id="view-board" class="sheet hidden" role="dialog" aria-modal="true" aria-label="Board">
+  <div class="sheet-body">
+    <div class="grab"></div>
+    <h2>Board <span id="board-built" class="board-built"></span></h2>
+    <div id="board-conductor" class="board-conductor"></div>
+    <nav class="chips" id="board-buckets" aria-label="Buckets"></nav>
+    <div class="search-row board-search">
+      <input id="board-q" type="search" placeholder="Search title, ask, project…" autocomplete="off" enterkeyhint="search">
+    </div>
+    <nav class="chips board-days" id="board-days" aria-label="Age"></nav>
+    <div id="board-list" class="board-list"><div class="empty">Loading…</div></div>
+    <div class="sheet-actions">
+      <button id="btn-board-refresh" class="ghost">Refresh</button>
+      <button id="btn-close-board" class="ghost">Done</button>
+    </div>
+  </div>
+</section>
+
+<section id="answersheet" class="sheet hidden" role="dialog" aria-modal="true" aria-label="Answer">
+  <div class="sheet-body">
+    <div class="grab"></div>
+    <h2>Your answer</h2>
+    <div id="answer-for" class="answer-for"></div>
+    <div id="answer-ask" class="bcard-ask answer-ask"></div>
+    <textarea id="answer-text" rows="4" placeholder="Type or dictate your answer. Enter starts a new line."></textarea>
+    <div class="answer-note" id="answer-note"></div>
+    <div class="sheet-actions">
+      <button id="answer-send" class="ghost primary">Send</button>
+      <button id="answer-cancel" class="ghost">Cancel</button>
+    </div>
+  </div>
+</section>
+<section id="view-tasks" class="sheet hidden" role="dialog" aria-modal="true" aria-label="Task queue">
+  <div class="sheet-body">
+    <div class="grab"></div>
+    <h2>Task queue</h2>
+    <div class="stats" id="task-sub"></div>
+    <ul class="sessions" id="tasks"></ul>
+    <div class="sheet-actions"><button id="btn-close-tasks" class="ghost">Done</button></div>
+  </div>
+</section>
+
+
+<section id="view-accounts" class="sheet hidden" role="dialog" aria-modal="true" aria-label="Accounts">
+  <div class="sheet-body">
+    
+    <div class="grab"></div>
+    <div id="accounts-slot"></div>
+    <div class="sheet-actions"><button id="btn-close-accounts" class="ghost">Done</button></div>
+  </div>
+</section>
+
+<div id="sheet" class="sheet hidden" role="dialog" aria-modal="true" aria-label="Session settings">
+  <div class="sheet-body">
+    <div class="grab"></div>
+    <h2 id="sheet-title">Session</h2>
+
+    <label class="lbl">Model</label>
+    <div class="seg" id="seg-model"></div>
+
+    <label class="lbl">Effort</label>
+    <div class="seg" id="seg-effort"></div>
+
+    
+    <label class="lbl">Fast mode · all sessions</label>
+    <div class="seg" id="seg-fast"></div>
+
+    <label class="lbl">Folder</label>
+    <div class="path" id="sheet-cwd"></div>
+
+    <label class="lbl">Usage</label>
+    <div class="usage" id="usage"></div>
+
+    <label class="lbl">Diagnostics</label>
+    <div class="diag" id="diag"></div>
+
+    <div class="sheet-actions">
+      <button id="btn-cancel-run" class="ghost danger" hidden>Stop this session</button>
+      <button id="btn-archive" class="ghost danger">Archive</button>
+      <button id="btn-close-sheet" class="ghost">Done</button>
+    </div>
+  </div>
+</div>
+
+
+<div id="newsheet" class="sheet hidden" role="dialog" aria-modal="true" aria-label="New session">
+  <div class="sheet-body">
+    <div class="grab"></div>
+    <h2>New session</h2>
+    <label class="lbl">Folder</label>
+    <input id="new-filter" type="search" placeholder="Filter folders" autocomplete="off">
+    <div class="folderlist" id="new-folders"></div>
+    <label class="lbl">First message</label>
+    <textarea id="new-prompt" rows="3" placeholder="What should it do?"></textarea>
+    <label class="lbl">Model</label>
+    <div class="seg" id="new-model"></div>
+    <label class="lbl">Effort</label>
+    <div class="seg" id="new-effort"></div>
+    <div class="sheet-actions">
+      <button id="btn-create" class="ghost primary">Create</button>
+      <button id="btn-close-new" class="ghost">Cancel</button>
+    </div>
+  </div>
+</div>
+
+
+<div id="chipsheet" class="sheet hidden" role="dialog" aria-modal="true" aria-label="Background tasks">
+  <div class="sheet-body">
+    <div class="grab"></div>
+    <h2>Background tasks</h2>
+    <div class="stats" id="chip-sub"></div>
+    <ul class="sessions" id="chiplist"></ul>
+    <div class="sheet-actions"><button id="btn-close-chips" class="ghost">Done</button></div>
+  </div>
+</div>
+
+<div id="cmdlist" class="cmdlist hidden"></div>
+<div id="install" class="install hidden">
+  <div><b>Install Baton</b><span>Add it to your home screen for notifications and full screen.</span></div>
+  <button id="btn-install">Install</button>
+  <button id="btn-install-x" aria-label="Dismiss">✕</button>
+</div>
+
+<div id="fileview" class="sheet hidden" role="dialog" aria-modal="true" aria-label="File">
+  <div class="sheet-body">
+    <div class="grab"></div>
+    <h2 id="file-name">File</h2>
+    <div class="path" id="file-path"></div>
+    <div id="file-body" class="filebody"></div>
+    <div class="sheet-actions"><button id="btn-close-file" class="ghost">Close</button></div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/app.js"></script>
+<script src="/routines-ui.js"></script>
+<script src="/board-ui.js"></script>
+<script src="/accounts-ui.js"></script>
+<script src="/settings-ui.js"></script>
+</body>
+</html>
