@@ -1684,7 +1684,8 @@ async function openNew() {
   $('new-filter').value = '';
   state.newFolder = null;
   const sd = (state.boot && state.boot.startDefaults) || null;
-  state.newModel = pickByFamily((state.boot && state.boot.models) || [], (sd && sd.model) || 'opus') || 'opus';
+  const bootModels = (state.boot && state.boot.models) || [];
+  state.newModel = (sd && bootModels.find(x => x === sd.model)) || pickByFamily(bootModels, (sd && sd.model) || 'opus') || 'opus';
   state.newEffort = (sd && sd.effort) || 'medium';
   renderNewSegs();
   try {
@@ -2084,13 +2085,15 @@ async function renderDiag() {
   try { cfg = await api('/api/notify-config'); } catch {}
   if (!cfg) return;
   const notif = cfg.notifications || {};
-  const route = cfg.push ? `web push (${cfg.push} subscription${cfg.push > 1 ? 's' : ''})`
+  const route = cfg.route ? cfg.route + (cfg.push ? '' : '. Tap the bell to subscribe, or set a backup channel in Settings › Notifications.')
+              : cfg.push ? `web push (${cfg.push} subscription${cfg.push > 1 ? 's' : ''})`
               : 'nowhere — no push subscription. Tap the bell to subscribe.';
   const sw2 = (k, label, on) =>
     `<label class="drow toggle"><input type="checkbox" data-k="${k}"${on ? ' checked' : ''}>` +
     `<span>${label}</span></label>`;
   el.insertAdjacentHTML('beforeend',
-    `<div class="drow note"><span>Alerts go out over ${route}</span></div>` +
+    `<div class="drow note"><span>Alerts go out over ${esc(route)}</span></div>` +
+    (cfg.contact && cfg.contact.placeholder ? `<div class="drow bad"><b>✗</b><span>No push contact set<i>Settings › Notifications: Apple may refuse push without a real mailto: address</i></span></div>` : '') +
     sw2('enabled', 'Send me alerts', notif.enabled !== false) +
     sw2('awaiting', 'When a session needs an answer (yellow)', notif.awaiting !== false) +
     sw2('done', 'When a session finishes (blue)', notif.done !== false));
@@ -2270,7 +2273,7 @@ async function renderAccountSwitch() {
         });
         if (!r || !r.ok) throw new Error((r && (r.message || r.error)) || 'not recorded');
         toast(b.dataset.a === 'transfer'
-          ? 'Recorded. Your sessions and routines are already synced both ways — the sidebar groups are still being repaired, and that is tracked separately.'
+          ? (d.transferToast || 'Recorded.')
           : 'Recorded — leaving both accounts as they are.');
         renderAccountSwitch();
       } catch (e) {

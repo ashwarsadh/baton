@@ -7,7 +7,19 @@ const { URL } = require('url');
 const config = require('../lib/config');
 
 const STORE = path.join(config.MOBILE, 'push.json');
-const SUBJECT = process.env.BATON_PUSH_SUBJECT || config.get().notifications.pushSubject;
+// The VAPID contact ("sub"). Read on EVERY send, so a contact entered in Settings applies at once.
+// Apple's push service refuses a JWT whose contact is not a real mailto:/https: address, so the
+// placeholder is only a last resort and Settings asks for a real one while it is in use.
+const PLACEHOLDER_SUBJECT = 'mailto:admin@localhost';
+const validSubject = (s) => /^mailto:[^@\s]+@[^@\s]+\.[^@\s]+$/i.test(s) || /^https:\/\/[^\s/]+\.[^\s]+/i.test(s);
+function subject() {
+  const set = String(process.env.BATON_PUSH_SUBJECT || (config.get().notifications || {}).pushSubject || '').trim();
+  return validSubject(set) ? set : PLACEHOLDER_SUBJECT;
+}
+function subjectStatus() {
+  const set = String(process.env.BATON_PUSH_SUBJECT || (config.get().notifications || {}).pushSubject || '').trim();
+  return { subject: subject(), set, valid: validSubject(set), placeholder: !validSubject(set) };
+}
 
 function load() {
   try { return JSON.parse(fs.readFileSync(STORE, 'utf8')); } catch { return null; }
@@ -96,7 +108,7 @@ function vapidJwt(audience) {
   const payload = Buffer.from(JSON.stringify({
     aud: audience,
     exp: Math.floor(Date.now() / 1000) + 12 * 3600,
-    sub: SUBJECT,
+    sub: subject(),
   })).toString('base64url');
   const signingInput = `${header}.${payload}`;
   const sig = crypto.sign('sha256', Buffer.from(signingInput), {
@@ -106,11 +118,15 @@ function vapidJwt(audience) {
   return `${signingInput}.${sig.toString('base64url')}`;
 }
 
+// The JWT audience is the push service's ORIGIN: scheme + '//' + host (a missing '//' made every
+// push service reject the token).
+function audience(u) { if (typeof u === 'string') u = new URL(u); return `${u.protocol}//${u.host}`; }
+
 function post(endpoint, payload) {
   return new Promise(resolve => {
     let u;
     try { u = new URL(endpoint); } catch { return resolve({ ok: false, status: 0, error: 'bad endpoint' }); }
-    const jwt = vapidJwt(`${u.protocol}${u.host}`);
+    const jwt = vapidJwt(audience(u));
     const req = https.request({
       method: 'POST',
       hostname: u.hostname,
@@ -152,4 +168,4 @@ async function send(data) {
   return { sent, gone };
 }
 
-module.exports = { publicKey, subscribe, drop, count, send, keys };
+module.exports = { publicKey, subscribe, drop, count, send, keys, subject, subjectStatus, audience, vapidJwt, PLACEHOLDER_SUBJECT };

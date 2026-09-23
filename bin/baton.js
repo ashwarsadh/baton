@@ -47,12 +47,12 @@ const clashHelp = () => `Port ${config.get().port} is used by another program. P
 async function startBackground() {
   if (await running()) { console.log(C.g('Baton is already running.')); return true; }
   if (await portClash()) { console.log(C.r(clashHelp())); return false; }
-  const logFile = path.join(config.STATE, 'daemon-stdio.log');
-  const out = fs.openSync(logFile, 'a');
-  const child = spawn(process.execPath, [path.join(ROOT, 'server.js')], { detached: true, stdio: ['ignore', out, out], windowsHide: true, cwd: os.homedir() });
-  child.unref();
+  // Through the stderr-keeping wrapper (lib/launch.js): rotation at 10 MB, launch and exit lines.
+  const launch = require('../lib/launch');
+  launch.clearStopped();
+  const { log: logFile } = launch.spawnDaemon();
   for (let i = 0; i < 40; i++) { await new Promise(r => setTimeout(r, 250)); if (await running()) { console.log(C.g('Baton started.')); return true; } }
-  console.log(C.r('Baton did not answer within 10s. See ' + logFile));
+  console.log(C.r('Baton did not answer within 10s. See ' + logFile + ' and ' + path.join(config.STATE, 'baton.log')));
   return false;
 }
 
@@ -64,6 +64,7 @@ async function doctor() {
   ok(wsOk, 'dependencies installed', 'Run `npm install` in ' + ROOT);
   const claudeDir = path.join(config.APPDATA, 'Claude');
   ok(fs.existsSync(claudeDir), 'Claude Desktop data found', 'Install Claude Desktop and sign in: https://claude.ai/download');
+  if (fs.existsSync(claudeDir)) ok(devMode(false), 'Claude Desktop Developer Mode on', 'Run `baton setup`, or in Claude Desktop: Help > Troubleshooting > Enable Developer Mode.');
   const cdp = await cdpUp();
   ok(cdp, `Claude Desktop debugger on port ${config.get().cdpPort}`, 'In Claude Desktop: Help > Troubleshooting > Enable Developer Mode, then Developer > Enable Main Process Debugger. Or run `baton debugger`.');
   const up = await running();
@@ -74,6 +75,19 @@ async function doctor() {
   const tunnel = require('../lib/tunnel');
   const mode = config.get().remote.mode;
   if (mode.startsWith('cloudflare')) ok(!!tunnel.binary(), 'cloudflared installed', WIN ? 'winget install Cloudflare.cloudflared' : 'brew install cloudflared');
+  if (config.get().idleGateSeconds > 0) {
+    const idle = require('../lib/idle');
+    for (let i = 0; i < 12 && idle.idleMs() === null; i++) await new Promise(r => setTimeout(r, 250));
+    const st = idle.status(); idle.stop();
+    ok(st.known, `idle detection (${st.method})`, (st.error || 'no reading') + ' — until it works Baton treats you as ACTIVE and waits. ' +
+      (process.platform === 'linux' ? 'Install xprintidle, or ' : '') + 'set "idleGateSeconds": 0 to run UI actions without waiting.');
+  }
+  if (WIN) {
+    const a = require('../lib/heal').checkScheduledTask();
+    ok(a.healthy, `autostart: ${a.detail}`, 'Run `baton autostart`.');
+  }
+  const stopped = require('../lib/launch').stoppedByUser();
+  if (stopped && !up) console.log(C.d(`  (you stopped Baton at ${stopped.at} via ${stopped.by}; the tray and watchdog leave it stopped until \`baton start\`)`));
   console.log(C.d(`\ndata: ${config.DATA}`));
 }
 
@@ -96,6 +110,7 @@ function mcpInstall(remove) {
   const argv = remove ? ['mcp', 'remove', '--scope', 'user', 'baton'] : ['mcp', 'add', '--scope', 'user', 'baton', '--', process.execPath, script];
   const r = spawnSync('claude', argv, { stdio: 'inherit', shell: WIN });
   if (r.status === 0) return console.log(C.g(remove ? 'Removed.' : 'Registered MCP server "baton". Restart Claude Desktop to load the tools.'));
+  if (remove) return console.log(C.y('The `claude` CLI was not found or refused. If ~/.claude.json lists "baton" under "mcpServers", delete that entry by hand.'));
   console.log(C.y('The `claude` CLI was not found or refused. Add this to ~/.claude.json under "mcpServers" instead:'));
   console.log(JSON.stringify({ baton: { type: 'stdio', command: process.execPath, args: [script] } }, null, 2));
 }
@@ -105,15 +120,35 @@ function autostart(action) {
     console.log('Autostart is automated on Windows only. On macOS/Linux, add `' + process.execPath + ' ' + path.join(ROOT, 'server.js') + '` to your login items (launchd / systemd --user).');
     return;
   }
-  if (action === 'remove') {
-    spawnSync('schtasks', ['/Delete', '/TN', TASK, '/F'], { stdio: 'inherit' });
+  // scripts/register-autostart.ps1 does the work and reports what it ACTUALLY registered: the "Baton"
+  // sign-in task (restart on failure, IgnoreNew) or, without admin rights, the per-user Run key; plus
+  // the 10-minute "Baton Watchdog" task. --headless: daemon only, as S4U when Windows allows it.
+  // The result is recorded in state/autostart.json so `baton status` and heal describe the truth.
+  const act = action === 'remove' ? 'remove' : action === 'status' ? 'status' : 'install';
+  const psArgs = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'scripts', 'register-autostart.ps1'),
+    '-Action', act, '-Mode', args.includes('--headless') ? 'headless' : 'tray'];
+  if (args.includes('--dry-run')) psArgs.push('-DryRun');
+  const r = spawnSync('powershell.exe', psArgs, { encoding: 'utf8', windowsHide: true, timeout: 120000 });
+  let out = null;
+  try { out = JSON.parse(String(r.stdout || '').trim().split(/\r?\n/).pop()); } catch {}
+  if (!out) return console.log(C.r('Could not run register-autostart.ps1: ' + String(r.stderr || r.error || r.stdout || '').trim().slice(0, 300)));
+  if (act === 'status') {
+    console.log(`sign-in task: ${out.task ? out.task.state + ' (' + out.task.logonType + ', last result ' + out.task.lastResult + ')' : C.d('none')}`);
+    console.log(`watchdog task: ${out.watchdogTask ? out.watchdogTask.state + ' (' + out.watchdogTask.logonType + ')' : C.d('none')}`);
+    console.log(`Run key: ${out.runKey ? 'set' : C.d('not set')}`);
     return;
   }
-  const vbs = path.join(ROOT, 'scripts', 'run-hidden.vbs');
-  const tray = path.join(ROOT, 'scripts', 'tray.ps1');
-  const tr = `wscript.exe "${vbs}" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${tray}"`;
-  const r = spawnSync('schtasks', ['/Create', '/TN', TASK, '/SC', 'ONLOGON', '/RL', 'LIMITED', '/F', '/TR', tr], { stdio: 'inherit' });
-  if (r.status === 0) console.log(C.g('Baton (with its tray icon) will start when you sign in. Start it now with `baton tray`.'));
+  if (!out.dryRun) {
+    try { fs.writeFileSync(path.join(config.STATE, 'autostart.json'), JSON.stringify({ ...out, at: new Date().toISOString() }, null, 2)); } catch {}
+  }
+  for (const n of out.notes || []) console.log(C.y(n));
+  for (const e of out.errors || []) console.log(C.d('  ' + e));
+  if (act === 'remove') return console.log(out.plan.length ? C.g((out.dryRun ? 'Would remove: ' : 'Removed: ') + out.plan.join('; ')) : 'Autostart was not set.');
+  if (out.dryRun) return console.log('Would set up:\n  ' + out.plan.join('\n  '));
+  if (!out.ok) return console.log(C.r('Could not set up autostart (scheduled task and Run key both refused).'));
+  const what = args.includes('--headless') ? 'The Baton daemon' : 'Baton (with its tray icon)';
+  console.log(C.g(`${what} will start when you sign in (${out.logon === 'task' ? 'scheduled task' + (out.s4u ? ', S4U' : '') : 'Run key'})` +
+    (out.watchdog ? ', and a watchdog checks every 10 minutes.' : '.')) + (args.includes('--headless') ? '' : ' Start it now with `baton tray`.'));
 }
 
 function tray() {
@@ -123,17 +158,31 @@ function tray() {
   console.log(C.g('Tray icon started (look for the baton in the notification area).'));
 }
 
+// Claude Desktop keeps Help > Troubleshooting > Enable Developer Mode as {"allowDevTools": true} in
+// developer_settings.json and reads it at launch. Returns true (on), 'changed' (just turned on) or false.
+function devMode(enable) {
+  const f = path.join(config.APPDATA, 'Claude', 'developer_settings.json');
+  let j = {}; try { j = JSON.parse(fs.readFileSync(f, 'utf8')) || {}; } catch {}
+  if (j.allowDevTools === true) return true;
+  if (!enable || !fs.existsSync(path.dirname(f))) return false;
+  try { fs.writeFileSync(f, JSON.stringify({ ...j, allowDevTools: true }, null, 2)); return 'changed'; }
+  catch (e) { console.log(C.r('Could not turn on Developer Mode: ' + e.message)); return false; }
+}
+
 async function setup() {
   console.log(C.b('\nBaton setup\n'));
   await doctor();
-  if (!(await cdpUp()) && WIN) {
+  if (!(await cdpUp()) && devMode(true) === 'changed') {
+    console.log(C.y('\nTurned on Claude Desktop Developer Mode. Quit Claude Desktop (tray icon › Quit) and open it again, then run `baton debugger`' +
+      (WIN ? ' — or just leave it: Baton switches the debugger on by itself once you are away from the keyboard.' : '.')));
+  } else if (!(await cdpUp()) && WIN) {
     console.log(C.y('\nTrying to switch on the Claude Desktop debugger for you (Claude will come to the front briefly)…'));
     spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'scripts', 'enable-debugger.ps1')], { stdio: 'inherit' });
   }
   let mcp = false;
   try { const j = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude.json'), 'utf8')); mcp = !!(j.mcpServers && j.mcpServers.baton); } catch {}
   if (!mcp) mcpInstall(false);
-  if (WIN) autostart('install');
+  if (WIN && !args.includes('--no-autostart')) autostart('install');
   await startBackground();
   if (WIN) tray();
   console.log(C.b('\nDone. Opening Baton — use Settings › Pair a phone to connect your phone.'));
@@ -144,18 +193,31 @@ function help() {
   console.log(`${C.b('baton')} — your Claude Code sessions, in your pocket
 
 ${C.b('Everyday')}
-  baton setup              one-time setup: checks, MCP tools, autostart, opens the app
+  baton setup              one-time setup: checks, Developer Mode + debugger, MCP tools, autostart
+                           (--no-autostart to skip that), opens the app
   baton open               open the app on this computer
   baton pair               show the QR code / link that signs your phone in
   baton status             is everything working? (alias: doctor)
 
 ${C.b('Daemon')}
   baton start              start in the background     (baton start --foreground to debug)
-  baton stop | restart
+  baton stop | restart     stop the daemon (it stays stopped until baton start)
   baton tray               Windows tray icon (open, pair, settings, restart, quit)
-  baton autostart [remove] start with Windows (tray + daemon)
+  baton autostart [remove|status] start with Windows (tray + daemon) with a 10-minute watchdog
+                           (--headless: daemon only, S4U when allowed; --dry-run: show the plan)
   baton debugger           switch on Claude Desktop's main-process debugger (Windows)
   baton mcp install|remove register the orchestrator tools with Claude Code
+  baton hooks install|remove|status [--dry-run]   optional Stop hook: sessions may not end on a question
+                           they can answer themselves (never installed by default; backs up settings.json)
+  baton accounts           the Claude accounts on this computer and what a sync would change
+  baton accounts sync [--apply] [--two-way] [--to <n>]   preview (default) or write the account sync
+                           --fold: also fold sidebar groups across accounts; --copy-only: no archive/details;
+                           --allow-delete (with --two-way): carry deletions
+  baton accounts undo [journal] · journals · hold on|off · freeze|unfreeze <record id> · frozen
+  baton accounts first-run baseline|archived-wins · groups-backups · groups-restore <stamp|latest>
+  baton accounts forget <scope> <group id>   a group deleted on purpose is never restored
+  baton accounts import-migrate [dir] [--apply] [--merge]   take over another sync tool's history
+  baton accounts launch-hook install|remove|status   start Claude through Baton (repair first) · verify
 
 ${C.b('Remote access')}   (also in Settings › Remote access)
   baton tunnel quick                random https://….trycloudflare.com address, no account
@@ -166,8 +228,90 @@ ${C.b('Remote access')}   (also in Settings › Remote access)
 ${C.b('Orchestrator')}
   baton run <task> · preview <task> · ls · show <id> · stop <id> · escalate <id>
   baton sessions · archivable · health · prune [days]
+  baton salvage [file] [--apply]      recover tasks from a quarantined registry.json.corrupt-*
+  baton import-ago [dir] [--apply]    import tasks, masters, watches and the notify queue from AGO
+  baton index build|route|who|session|tree|masters|progress|buried|learn|tag|log|tasks|newproject|digest
+                                      project index + transcript intelligence (\`baton index help\`)
+  baton hygiene [compact [--send] [--cap N] | show]   what each session's context needs (HYGIENE.md); compact = last-warm-cycle /compact
+  baton archive-candidates [days]     sessions safe to archive, with reasons (never archives; default 14 days)
+  baton wakes [hours] | log [hours] | rollup [--force]   warm vs cold wakes; the wakes Baton itself sent
+  baton summarize [--cap N] [--budget-min M] [--days D] [--dry-run]   5-line overview per changed session
+  baton roles [--budget N] [--one <id>] [--stats]   the roles DB owner routing reads (free heuristic without an engine)
+  baton engine [status|test]          the model engine (off by default; Settings › Model engine)
+  baton directives [--dry-run] [project…]   your own words per project from the digests → <project>/DIRECTIVES.md
+                                      (never overwrites a hand-written file; hand edits below the last line survive)
+  baton inbox [--all] · add <text> [--session <id>] [--log] · ask <n> decide|do|fyi <text> · done|drop|wait <n>
+                                      things only you can do (\`baton inbox help\`)
+  baton goal list|show|add|progress|done|verify|judged|collected|health   the goal register (\`baton goal help\`)
+  control dashboard: http://127.0.0.1:${config.get().port}/  (this computer only)
 
 ${C.d('data: ' + config.DATA)}`);
+}
+
+async function accountsCmd() {
+  const sync = require('../lib/account-sync');
+  const sub = (args[1] || 'list').toLowerCase();
+  const opt = n => { const i = args.indexOf(n); return i > 0 ? args[i + 1] : null; };
+  if (sub === 'undo') {
+    const r = await sync.undo(args[2] || sync.journals()[0]);
+    (r.lines || []).forEach(l => console.log(C.d('  ' + l)));
+    return console.log(r.ok ? C.g('Undone: ' + r.reversed + ' of ' + r.of + ' change(s) reversed.') : C.r(r.message || r.error));
+  }
+  const say = r => { (r.lines || []).forEach(l => console.log('  ' + l)); console.log(r.ok === false ? C.r(r.message || r.error || 'failed') : C.g(r.message || 'Done.')); };
+  const lnch = () => require('../lib/account-sync/launch');
+  switch (sub) {
+    case 'journals': return sync.journals().slice(0, 20).forEach(j => console.log('  ' + j));
+    case 'hold': return say({ ...sync.setHold(args[2] !== 'off'), message: 'Session-detail sync is ' + (args[2] !== 'off' ? 'ON HOLD' : 'running') + '.' });
+    case 'freeze': return say(sync.freeze(args[2], args.slice(3).join(' ')));
+    case 'unfreeze': return say(sync.unfreeze(args[2]));
+    case 'frozen': return Object.entries(sync.core.frozenIds()).forEach(([id, why]) => console.log('  ' + id + '  ' + C.d(why)));
+    case 'first-run': {
+      if (!['baseline', 'archived-wins'].includes(args[2])) return console.log(C.r('first-run baseline|archived-wins'));
+      config.set({ accounts: { firstRunMode: args[2] } }); return console.log(C.g('First-run mode: ' + args[2]));
+    }
+    case 'groups-backups': return sync.groupBackups().forEach(b => console.log('  ' + b.stamp + '  ' + C.d((b.store || '1p') + ' ' + (b.reason || '') + ' ' + (b.at || ''))));
+    case 'groups-restore': return say(await sync.restoreGroups(args[2] || 'latest'));
+    case 'forget': return say(sync.forgetGroup(args[2], args[3]));
+    case 'import-migrate': {
+      const dir = args[2] && !args[2].startsWith('--') ? args[2] : path.join(config.CLAUDE_HOME, 'migrate');
+      return say(await sync.importMigrate(dir, { apply: args.includes('--apply'), merge: args.includes('--merge') }));
+    }
+    case 'launch': return say(await lnch().launchThroughBaton({ pass: () => sync.bootPass({ force: true, trigger: 'launch' }) }));
+    case 'launch-hook': {
+      const v = (args[2] || 'status').toLowerCase();
+      const r = v === 'install' ? await lnch().hookInstall() : v === 'remove' ? await lnch().hookRemove() : await lnch().hookStatus();
+      if (v === 'status') return console.log(r.supported ? (r.installed ? C.g('Claude Desktop starts through Baton.') + C.d(' Undo: baton accounts launch-hook remove') : 'Claude Desktop starts on its own.') : r.message);
+      return say(r);
+    }
+    case 'verify': {
+      const p = sync.verify.pending(), v = sync.verify.verdict();
+      if (p) console.log(C.y('A relaunch check is waiting (armed ' + p.at + ').'));
+      if (v) console.log((v.ok === true ? C.g('Last relaunch check: OK') : v.ok === false ? C.r('Last relaunch check: FAILED - Claude Desktop replaced the groups written')
+        : C.y('Last relaunch check: not done - Claude Desktop was not reopened in time')) + C.d(' (' + v.at + ')'));
+      return p || v ? undefined : console.log('No group write to check.');
+    }
+  }
+  const first = await sync.status();
+  const pick = opt('--to');
+  const target = pick ? (first.scopes[Number(pick) - 1] || first.scopes.find(s => s.key.startsWith(pick)) || {}).key : null;
+  if (pick && !target) return console.log(C.r('No account ' + pick + '. Run "baton accounts" to see the numbers.'));
+  const r = sub === 'sync'
+    ? await sync.run({ apply: args.includes('--apply'), mode: args.includes('--two-way') ? 'two-way' : undefined, target,
+        ...(args.includes('--fold') ? { foldGroups: true } : {}), ...(args.includes('--copy-only') ? { syncArchive: false, syncState: false } : {}),
+        ...(args.includes('--allow-delete') ? { allowDelete: true } : {}) })
+    : first;
+  console.log(C.d(r.writableNote || ''));
+  r.scopes.forEach((s, i) => {
+    const drift = Object.entries(s.changes).filter(([, n]) => n).map(([k, n]) => n + ' ' + k).join(', ');
+    const wait = Object.entries(s.pending).filter(([, n]) => n).map(([k, n]) => n + ' ' + k).join(', ');
+    console.log(`${i + 1}. ${C.b(s.label)}${s.active ? C.g(' (in use)') : ''}${s.included ? '' : C.d(' (not synced)')}  ${C.d(s.role)}`);
+    console.log(`   ${s.records} sessions, ${s.archived} archived, ${s.routines} routines, ${s.groups} groups` +
+      (drift ? (r.applied ? C.g('  written: ' + drift) : C.y('  to bring in: ' + drift)) : '') + (wait ? C.d('  waits for Desktop to close: ' + wait) : ''));
+  });
+  if (!r.ok) return console.log(C.r(r.lines[0] || r.error));
+  if (r.applied) console.log(C.g(`Written: ${r.changeCount} change(s).`) + (r.applied.journal ? C.d(' Undo: baton accounts undo ' + r.applied.journal) : ''));
+  else if (sub === 'sync') console.log(r.changeCount ? C.y(`Preview only: ${r.changeCount} change(s). Add --apply to write them.`) : C.g('Nothing to change.'));
+  if (r.pendingCount) console.log(C.d(r.pendingCount + ' change(s) wait until Claude Desktop is closed.'));
 }
 
 (async () => {
@@ -178,11 +322,41 @@ ${C.d('data: ' + config.DATA)}`);
       if (args.includes('--foreground') || args.includes('-f')) return require('../server.js');
       return void (await startBackground());
     case 'stop': {
-      const s = await post(config.get().port, '/api/shutdown');
-      return console.log(s ? C.g('Stopping…') : C.y('Baton was not running.'));
+      // `baton stop <task-id>` stops ONE worker (cli.js); only a bare `baton stop` stops the daemon.
+      if (args[1] && !args[1].startsWith('-')) {
+        process.argv = [process.argv[0], path.join(ROOT, 'cli.js'), ...args];
+        return require('../cli.js');
+      }
+      // Only ask Baton to shut down: never POST /api/shutdown at another program on the same port.
+      const s = (await running()) && await post(config.get().port, '/api/shutdown');
+      // Remembered, so the tray's health poll and the 10-minute watchdog leave it stopped.
+      if (s) require('../lib/launch').markStopped('baton stop');
+      return console.log(s ? C.g('Stopping…') + C.d(' (it stays stopped until `baton start`)') : C.y('Baton was not running.'));
+    }
+    case 'salvage': {
+      const r = require('../lib/salvage').run({ src: args[1] && !args[1].startsWith('-') ? args[1] : undefined, apply: args.includes('--apply') || args.includes('--write') });
+      if (!r.ok) return console.log(C.r(`${r.error}: ${r.message || r.src || ''}`) + (r.padding ? C.d(`\n  ${r.padding} of ${r.chars} chars were padding — nothing was written before the cut.`) : ''));
+      console.log(`source : ${r.src}\nmethod : ${r.method}  (${r.padding} chars of trailing padding)\nfound  : ${r.recovered} task(s); live registry has ${r.liveBefore}`);
+      if (Object.keys(r.renumbered).length) console.log(C.y('renumbered (id already taken by a newer task): ' + Object.entries(r.renumbered).map(([a, b]) => a + '→' + b).join(', ')));
+      console.log(r.applied ? C.g(`Wrote ${r.total} task(s) to ${r.wrote} (${r.added} added).`)
+        : C.y(`Dry run: would add ${r.added} task(s) (${r.alreadyPresent} already present), ${r.total} in total. Add --apply to write.`));
+      if (r.applied && await running()) console.log(C.d('The daemon picks the change up on its next read.'));
+      return;
+    }
+    case 'import-ago': {
+      const r = require('../lib/import-ago').run({ dir: args[1] && !args[1].startsWith('-') ? args[1] : undefined, apply: args.includes('--apply') });
+      if (!r.ok) return console.log(C.r(`${r.error}: ${r.message}`));
+      console.log(`from ${r.source}\n  to ${r.dest}`);
+      for (const [f, v] of Object.entries(r.files)) console.log(`  ${f.padEnd(19)} ${JSON.stringify(v)}`);
+      if (Object.keys(r.renumbered).length) console.log(C.y(`  ${Object.keys(r.renumbered).length} task id(s) renumbered because Baton already uses them; references follow.`));
+      for (const w of r.warnings) console.log(C.y('  ! ' + w));
+      if (r.applied) console.log(C.g(`Imported: ${r.wrote.join(', ')}.`) + (r.backup ? C.d(` Previous Baton files saved in ${r.backup}.`) : '') + C.d(' The source was not modified.'));
+      else console.log(r.wouldWrite.length ? C.y(`Dry run: would write ${r.wouldWrite.join(', ')}. Add --apply to import (the source is never modified).`) : C.g('Nothing to import.'));
+      if (r.applied && await running()) console.log(C.d('Restart Baton (`baton restart`) so the notify queue and watches are re-read.'));
+      return;
     }
     case 'restart':
-      await post(config.get().port, '/api/shutdown');
+      if (await running()) await post(config.get().port, '/api/shutdown');
       for (let i = 0; i < 60 && await running(); i++) await new Promise(r => setTimeout(r, 250));
       return void (await startBackground());
     case 'open':
@@ -197,6 +371,44 @@ ${C.d('data: ' + config.DATA)}`);
       if (!WIN) return console.log('In Claude Desktop: Developer > Enable Main Process Debugger.');
       return void spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'scripts', 'enable-debugger.ps1')], { stdio: 'inherit' });
     case 'mcp': return mcpInstall(args[1] === 'remove');
+    case 'hooks': return void require('../hooks/install').cli(args.slice(1));
+    case 'accounts': return accountsCmd();
+    case 'index': return require('../lib/index-cli').run(args.slice(1));
+    case 'hygiene': return void (await require('../lib/hygiene').cli(args.slice(1)));
+    case 'archive-candidates': {
+      const r = require('../lib/archive').report({ days: /^\d+$/.test(args[1] || '') ? Number(args[1]) : undefined });
+      if (r.error) return console.log(C.r(r.error + ' — run `baton index build` first'));
+      for (const c of r.candidates) console.log(`  ${c.sessionId}  ${String(c.title).slice(0, 50)}  ${C.d(c.reason)}`);
+      return console.log(`${r.count} candidate(s), ${r.heldBack.length} held back. ${C.d('Written: ' + r.report + ' — archive only what the user approves.')}`);
+    }
+    case 'wakes': {
+      const W = require('../lib/wakes');
+      const n = Number(args[2] || args[1]) > 0 ? Number(args[2] || args[1]) : 24;
+      if (args[1] === 'log') return console.log(JSON.stringify(W.forwardLog({ hours: n }), null, 2));
+      if (args[1] === 'rollup') return console.log(JSON.stringify(W.rollup({ force: args.includes('--force') }) || { skipped: 'already rolled up in the last 24 h (--force to add one)' }, null, 2));
+      return console.log(JSON.stringify(W.daily({ hours: n }), null, 2));
+    }
+    case 'summarize': return require('../lib/summarize').cli(args.slice(1));
+    case 'roles': return require('../lib/roles').cli(args.slice(1));
+    case 'engine': return require('../lib/engine').cli(args.slice(1));
+    case 'directives': {
+      const r = require('../lib/directions').run({ dryRun: args.includes('--dry-run'), only: args.slice(1).filter(a => !a.startsWith('--')) });
+      if (r.error) { console.log(C.r(`${r.error}: ${r.message}`)); process.exitCode = 1; return; }
+      const R = r.recovery;
+      console.log(C.d(`digests ${R.digests} · owner turns ${R.owner_turns} · kept ${R.kept} (via Conductor ${R.via_conductor}, envelope splits ${R.envelope_split}) · ` +
+        `dropped: ack ${R.ack}, board ${R.board}, machine ${R.machine}, duplicate ${R.duplicate}, brief ${R.brief} · redacted ${R.redacted}`));
+      for (const l of r.lines) console.log('  ' + l);
+      if (r.pages) console.log(C.d(`direction pages: ${r.pages.dir}`));
+      console.log(r.ok ? C.g(r.dryRun ? `Dry run: ${r.written} file(s) would be written.` : `${r.written} DIRECTIVES.md written.`) : C.r(`FAILED: ${r.written} written, ${r.failed} failed.`));
+      if (!r.ok) process.exitCode = 1;
+      return;
+    }
+    case 'inbox': case 'goal': {
+      const r = require(args[0] === 'inbox' ? '../lib/inbox' : '../lib/goals').cli(args.slice(1));
+      if (r.text) (r.code ? console.error : console.log)(r.text);
+      process.exitCode = r.code || 0;
+      return;
+    }
     case 'tunnel': {
       const tunnel = require('../lib/tunnel');
       const sub = (args[1] || 'status').toLowerCase();

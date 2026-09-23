@@ -11,6 +11,7 @@ const router = require(path.join(Baton, 'lib', 'router.js'));
 const desktop = require(path.join(Baton, 'lib', 'desktop.js'));
 const { protocolText, PROTOCOL, reportLine } = require(path.join(Baton, 'lib', 'master-protocol.js'));
 const notify = require(path.join(Baton, 'lib', 'notify.js'));
+const access = require(path.join(Baton, 'lib', 'conductor-access.js'));
 
 const STATE_DIR = config.STATE;
 const MASTERS_FILE = path.join(STATE_DIR, 'masters.json');
@@ -75,6 +76,9 @@ function clearMaster() {
   saveAll(all);
 }
 function isMaster() { return !!myClaim(); }
+function conductor() { return String(config.get().conductorSession || '') || null; }
+function isConductor() { return !!ME && conductor() === ME; }
+function myRole() { return access.role({ me: ME, claim: myClaim(), conductor: conductor() }); }
 
 function daemon(method, p, body, opts = {}) {
   return new Promise(resolve => {
@@ -106,8 +110,8 @@ async function activeGoalsIn(fleet) {
 const DENY = (name) => ({
   error: 'NOT_MASTER',
   message: `This session is a SLAVE and may not call "${name}".\n\n` +
-    `Control tools require the master claim. If the USER has explicitly asked this session to act ` +
-    `as the master/coordinator, call baton_become_master first (quoting their instruction). ` +
+    `Control tools require the master claim (or the Conductor role). If the USER has explicitly asked this session to act ` +
+    `as the master/coordinator, call baton_become_master first (quoting their instruction); as the conductor, baton_become_conductor. ` +
     `Do NOT claim mastery on your own initiative.`,
   currentMaster: (() => { const m = loadMaster(); return m ? { sessionId: m.sessionId, title: m.sessionTitle, claimedAt: m.claimedAt } : null; })(),
 });
@@ -125,7 +129,8 @@ const TOOLS = [
       return {
         thisSession: ME,
         thisProject: projectKey(),
-        role: mine ? 'MASTER' : 'SLAVE',
+        role: isConductor() ? 'CONDUCTOR' : mine ? 'MASTER' : 'SLAVE',
+        conductor: conductor(),
         fastMode: await (async () => {
           try {
             const f = await desktop.readFastMode(ME);
@@ -146,7 +151,7 @@ const TOOLS = [
         note: mine
           ? `You are MASTER of project "${mine.project}". Control tools are enabled.`
           : 'You are a SLAVE. Control tools are disabled unless the user explicitly asks you to be the master of this project.',
-        operatingProtocol: mine ? protocolText() : undefined,
+        operatingProtocol: isConductor() ? require(path.join(Baton, 'lib', 'master-protocol.js')).conductorProtocolText() : mine ? protocolText() : undefined,
       };
     },
   },
@@ -210,6 +215,250 @@ const TOOLS = [
       clearMaster();
       audit(`MASTER RELEASED by ${ME}`);
       return { ok: true, role: 'SLAVE', note: 'Master claim released.' };
+    },
+  },
+  {
+    name: 'baton_become_conductor',
+    description: 'Claim the Baton CONDUCTOR role for THIS session: the one session above every project. It holds the index of all projects, their sidebar groups, sessions and masters, routes each request verbatim to the owning session or project master (spawning a master when a project has none), keeps the sidebar organised, and never does the work itself. There is only one Conductor; the claim is stored in settings (conductorSession).\n\nONLY call this when the USER has explicitly asked this session to be the conductor. Quote their words in user_instruction. Returns the operating protocol and a compact project summary. Unlocks the control tools and baton_projects.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        user_instruction: { type: 'string', description: 'Verbatim quote of the user asking this session to be the conductor.' },
+        takeover: { type: 'boolean', description: 'Take the role from another session that holds it. Only if the user asked.' },
+      },
+      required: ['user_instruction'],
+    },
+    slaveSafe: true,
+    handler: async (a) => {
+      if (!ME) return { error: 'NO_SESSION_ID', message: 'Cannot identify this session (CLAUDE_CODE_HOST_SESSION_ID unset), so the role cannot be granted safely.' };
+      if (!a.user_instruction || a.user_instruction.trim().length < 4) {
+        return { error: 'INSTRUCTION_REQUIRED', message: 'Quote the user instruction that makes this session the conductor.' };
+      }
+      const cur = conductor();
+      if (cur && cur !== ME && !a.takeover) {
+        return { error: 'ALREADY_CLAIMED', message: `Session ${cur} is the Conductor. There is only one. Ask the user before taking over, then retry with takeover:true.`, currentConductor: cur };
+      }
+      config.set({ conductorSession: ME });
+      audit(`CONDUCTOR CLAIMED by ${ME} takeover=${!!a.takeover}${cur && cur !== ME ? ' from ' + cur : ''} instruction="${String(a.user_instruction).slice(0, 500)}"`);
+      const projects = require(path.join(Baton, 'lib', 'projects.js'));
+      let ix = null, indexError;
+      try { ix = await projects.build(); } catch (e) { indexError = e.message; }
+      return {
+        ok: true, role: 'CONDUCTOR', sessionId: ME, takeoverFrom: cur && cur !== ME ? cur : undefined,
+        operatingProtocol: require(path.join(Baton, 'lib', 'master-protocol.js')).conductorProtocolText(),
+        index: ix ? { dir: projects.DIR, builtAt: ix.builtAt, ...ix.counts } : { error: indexError },
+        projects: ix ? projects.summary(ix, { limit: 25 }) : [],
+        note: 'baton_projects project:"<name>" shows one project\'s sessions; refresh:true rebuilds the index.',
+      };
+    },
+  },
+  {
+    name: 'baton_release_conductor',
+    description: 'Release the Conductor role held by this session (clears settings.conductorSession). Call when handing over or when the user asks you to stop being the conductor.',
+    inputSchema: { type: 'object', properties: {} },
+    slaveSafe: true,
+    handler: async () => {
+      if (!isConductor()) return { ok: true, note: 'This session is not the Conductor; nothing to release.', currentConductor: conductor() };
+      config.set({ conductorSession: '' });
+      audit(`CONDUCTOR RELEASED by ${ME}`);
+      return { ok: true, role: isMaster() ? 'MASTER' : 'SLAVE', note: 'Conductor role released.' };
+    },
+  },
+  {
+    name: 'baton_projects',
+    description: 'CONDUCTOR AND MASTERS. The project index: every project (a working folder, or the git repo it sits in) with its sidebar group, master and active sessions. With `project` (a name or a path), one project in detail with its sessions. Read from disk; never touches the Desktop UI. Rebuilt every 30 minutes; refresh:true rebuilds it now.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'A project name or folder path for detail. Omit to list all projects.' },
+        refresh: { type: 'boolean', description: 'Rebuild the index before answering.' },
+        include_idle: { type: 'boolean', description: 'Also list projects with no active sessions.' },
+      },
+    },
+    handler: async (a) => {
+      const projects = require(path.join(Baton, 'lib', 'projects.js'));
+      const ix = a.refresh ? await projects.build({ force: true }) : await projects.fresh(30 * 60000);
+      if (a.project) {
+        const d = projects.detail(ix, a.project);
+        return d ? { ok: true, builtAt: ix.builtAt, project: d }
+          : { error: 'NO_SUCH_PROJECT', message: `No project matches "${a.project}".`, projects: Object.keys(ix.projects) };
+      }
+      const list = a.include_idle
+        ? Object.values(ix.projects).map(p => ({ project: p.name, path: p.path, active: p.counts.active, archived: p.counts.archived, group: p.group, master: p.master ? p.master.sessionId : null }))
+        : projects.summary(ix, { limit: 200 });
+      return { ok: true, builtAt: ix.builtAt, conductor: ix.conductor, counts: ix.counts, groupSource: ix.groupSource, projects: list };
+    },
+  },
+  // ---- transcript intelligence (lib/projects.js, index-views.js, aliases.js, digests.js, ostasks.js)
+  {
+    name: 'baton_session_card',
+    description: 'CONDUCTOR AND MASTERS. One session\'s card from the index: BOTH ids (local_ Desktop id and CLI uuid, plus the resumed chain), project, group, context (byte ESTIMATE + compaction count — the estimate is a hint, never a liveness signal), pending state (running / buried / asks / unanswered / open / ended, critical, narrow-vs-broad awaiting), tags, skills, fleet (parent + children) and prompts. `session` accepts a full id, an 8-char prefix or a CLI uuid prefix. tree:true adds the fleet tree under it.',
+    inputSchema: { type: 'object', properties: { session: { type: 'string' }, tree: { type: 'boolean' } }, required: ['session'] },
+    handler: async (a) => {
+      const ix = await require(path.join(Baton, 'lib', 'projects.js')).fresh(30 * 60000);
+      const V = require(path.join(Baton, 'lib', 'index-views.js'));
+      const r = V.card(ix, a.session);
+      if (r.ok && a.tree) r.tree = V.tree(ix, a.session).text;
+      return r;
+    },
+  },
+  {
+    name: 'baton_progress',
+    description: 'CONDUCTOR AND MASTERS. One project\'s progress: its plan/status files (open vs done checkboxes, first open items) and every live session\'s plan → state → pending (what was asked, where it stopped, whether it is waiting on someone).',
+    inputSchema: { type: 'object', properties: { project: { type: 'string' } }, required: ['project'] },
+    handler: async (a) => require(path.join(Baton, 'lib', 'index-views.js')).progress(await require(path.join(Baton, 'lib', 'projects.js')).fresh(30 * 60000), a.project),
+  },
+  {
+    name: 'baton_buried',
+    description: 'CONDUCTOR AND MASTERS. The buried-question report: sessions whose last ask no human answered because a relay / notice (another session\'s message, a Baton fleet update, a task notification) landed after it and hid it — the work halted. Newest first, with the ask text and what hid it. days defaults to 14.',
+    inputSchema: { type: 'object', properties: { days: { type: 'number' } } },
+    handler: async (a) => require(path.join(Baton, 'lib', 'index-views.js')).buried(await require(path.join(Baton, 'lib', 'projects.js')).fresh(30 * 60000), a.days || 14),
+  },
+  {
+    name: 'baton_masters',
+    description: 'CONDUCTOR AND MASTERS. Baton master claims and the living masters of every sidebar group (a claim, a title that says master, or >= 3 spawned children), each with its context label and fleet size.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async () => require(path.join(Baton, 'lib', 'index-views.js')).masters(await require(path.join(Baton, 'lib', 'projects.js')).fresh(30 * 60000)),
+  },
+  {
+    name: 'baton_learn',
+    description: 'CONDUCTOR AND MASTERS. Teach routing an alias: a keyword that means a project or sidebar group ("learn billing -> payments-api"). baton_route_owner boosts that project for any topic containing the keyword (whole word). Aliases start empty.',
+    inputSchema: { type: 'object', properties: { keyword: { type: 'string' }, project: { type: 'string', description: 'Project folder name or sidebar group name.' } }, required: ['keyword', 'project'] },
+    handler: async (a) => require(path.join(Baton, 'lib', 'aliases.js')).learn(a.keyword, a.project),
+  },
+  {
+    name: 'baton_tag',
+    description: 'CONDUCTOR AND MASTERS. Add manual topic tags to ONE session (they lead its auto tf-idf tags from the next index build and feed routing). Refuses a reference that matches zero or several sessions.',
+    inputSchema: { type: 'object', properties: { session: { type: 'string' }, tags: { type: 'string', description: 'Comma-separated.' } }, required: ['session', 'tags'] },
+    handler: async (a) => require(path.join(Baton, 'lib', 'aliases.js')).tag(await require(path.join(Baton, 'lib', 'projects.js')).fresh(30 * 60000), a.session, a.tags),
+  },
+  {
+    name: 'baton_dispatch_log',
+    description: 'CONDUCTOR AND MASTERS. The routing memory. With query + target: record that this request went to that session (confirmed:true when the USER confirmed or corrected it — it then weighs twice a guess). baton_route_owner learns from these. Without: the last `n` decisions (default 15) with target titles.',
+    inputSchema: { type: 'object', properties: { query: { type: 'string' }, target: { type: 'string' }, reason: { type: 'string' }, confirmed: { type: 'boolean' }, n: { type: 'number' } } },
+    handler: async (a) => {
+      const A = require(path.join(Baton, 'lib', 'aliases.js'));
+      if (a.query || a.target) return A.logDispatch(a.query, a.target, a.reason, a.confirmed);
+      return { ok: true, dispatches: A.dispatches(a.n || 15, require(path.join(Baton, 'lib', 'projects.js')).read()) };
+    },
+  },
+  {
+    name: 'baton_os_tasks',
+    description: 'CONDUCTOR AND MASTERS. The operating system\'s scheduled tasks (Windows Task Scheduler; macOS launchd + cron; Linux cron — best effort), each attributed to the project whose folder its command lives in, with how often it fires and whether it may flash a console window. Use it to route a machine-level symptom ("a window keeps popping up") to the owning project. refresh:true re-reads the OS now (spawns schtasks/crontab).',
+    inputSchema: { type: 'object', properties: { refresh: { type: 'boolean' } } },
+    handler: async (a) => {
+      const P = require(path.join(Baton, 'lib', 'projects.js'));
+      const ix = P.read() || await P.fresh(30 * 60000);
+      const roots = Object.values(ix.projects || {}).map(p => ({ path: p.path, name: p.name }));
+      const r = await require(path.join(Baton, 'lib', 'ostasks.js')).collect({ projectRoots: roots, force: !!a.refresh, maxAgeMs: a.refresh ? 0 : 6 * 3600000 });
+      return { ok: true, at: r.at, count: r.rows.length, tasks: r.rows };
+    },
+  },
+  {
+    name: 'baton_newproject',
+    description: 'CONDUCTOR ONLY. Create a new project folder under settings index.projectsRoot, seed its CLAUDE.md with the purpose, and teach routing its name. REFUSES when projectsRoot is unset or the name is not a plain folder name; never overwrites an existing folder. Then start the first session there with baton_spawn.',
+    inputSchema: { type: 'object', properties: { name: { type: 'string' }, purpose: { type: 'string' } }, required: ['name'] },
+    handler: async (a) => {
+      if (!isConductor()) return { error: 'CONDUCTOR_ONLY', message: 'Only the Conductor creates projects (baton_become_conductor, and only if the user asked).' };
+      return require(path.join(Baton, 'lib', 'projects.js')).newProject(a.name, a.purpose || '');
+    },
+  },
+  {
+    name: 'baton_who_touched',
+    description: 'CONDUCTOR AND MASTERS. WHO WORKED ON THIS? Grep every transcript for a DISTINCTIVE pattern (an id, an error code, a filename, a commit hash — a regex, case-insensitive) and rank sessions by HIT COUNT (a resumed session sums its chain). A score is a guess a session might be relevant; a hit is evidence it touched the thing. A miss is a fact about the pattern: it proves presence, never absence.',
+    inputSchema: { type: 'object', properties: { pattern: { type: 'string' }, limit: { type: 'number' } }, required: ['pattern'] },
+    handler: async (a) => {
+      const r = await require(path.join(Baton, 'lib', 'owner.js')).whoTouched(a.pattern, { limit: a.limit || 25 });
+      if (r) delete r.hitsById;
+      return r;
+    },
+  },
+  {
+    name: 'baton_digest',
+    description: 'CONDUCTOR AND MASTERS. A session\'s lean digest: the user\'s messages and the assistant\'s final answer per turn (relays one line; no tool calls, tool output or images), resumed transcripts in order. Brought up to date incrementally, then returned from byte `since` (default 0) with the new `offset` — pass that back next time to read only what is new.',
+    inputSchema: { type: 'object', properties: { session: { type: 'string' }, since: { type: 'number' }, max_chars: { type: 'number' } }, required: ['session'] },
+    handler: async (a) => {
+      const D = require(path.join(Baton, 'lib', 'digests.js'));
+      const ix = await require(path.join(Baton, 'lib', 'projects.js')).fresh(30 * 60000);
+      const hit = require(path.join(Baton, 'lib', 'aliases.js')).findSessions(ix, a.session);
+      if (hit.length !== 1) return { error: 'REFUSED', message: `need exactly one session matching "${a.session}", got ${hit.length}` };
+      const u = D.update(hit[0].id, { session: hit[0] });
+      if (!u.ok) return u;
+      const d = D.readDelta(hit[0].id, a.since || 0);
+      const cap = a.max_chars || 20000;
+      return { ok: true, session: hit[0].id, offset: d.offset, truncated: d.text.length > cap || undefined, text: d.text.length > cap ? d.text.slice(-cap) : d.text };
+    },
+  },
+  {
+    name: 'baton_overview',
+    description: 'CONDUCTOR AND MASTERS. A session\'s 5-line overview (goal · done · in_progress · blocked_on · last_ask) and its roles-DB record (role, owns_topics, not_owns, open goals, the lines it was drawn from) — read these before opening a transcript. Without `session`: the engine, the last overview pass and the last roles run. Reads only; spends nothing.',
+    inputSchema: { type: 'object', properties: { session: { type: 'string', description: 'Session id or 8-hex prefix. Omit for status.' } } },
+    handler: async (a) => {
+      const S = require(path.join(Baton, 'lib', 'summarize.js')), R = require(path.join(Baton, 'lib', 'roles.js')), E = require(path.join(Baton, 'lib', 'engine.js'));
+      const db = R.loadDb();
+      if (!a.session) {
+        let last = null; try { last = JSON.parse(require('fs').readFileSync(S.LAST_RUN(), 'utf8')); } catch {}
+        return { ok: true, engine: E.describe(), summaries: last, roles: { records: Object.keys(db.sessions || {}).length, pending: Object.keys(db.pending || {}).length, last_run: (db.stats || {}).last_run || null } };
+      }
+      const ix = await require(path.join(Baton, 'lib', 'projects.js')).fresh(30 * 60000);
+      const hit = require(path.join(Baton, 'lib', 'aliases.js')).findSessions(ix, a.session);
+      if (hit.length !== 1) return { error: 'REFUSED', message: `need exactly one session matching "${a.session}", got ${hit.length}` };
+      const id = hit[0].id;
+      return { ok: true, session: id, title: hit[0].title, overview: S.get(id), role: (db.sessions || {})[id] || null,
+        note: S.get(id) ? undefined : 'no overview yet (module summaries + an engine; `baton summarize`)' };
+    },
+  },
+  {
+    name: 'baton_directives',
+    description: 'CONDUCTOR AND MASTERS. Rebuild the user\'s own words per project from the session digests (<data>/conductor/direction/<project>.md, every exclusion in _excluded.md with what matched) and regenerate <project folder>/DIRECTIVES.md. dry_run (DEFAULT true) writes nothing and reports what would change; dry_run:false REFUSES unless the directives module is on. Never overwrites a hand-written DIRECTIVES.md; hand edits below its last line survive. project: a name fragment to limit the run.',
+    inputSchema: { type: 'object', properties: { project: { type: 'string' }, dry_run: { type: 'boolean' } } },
+    handler: async (a) => {
+      const dry = a.dry_run !== false;
+      const r = require(path.join(Baton, 'lib', 'directions.js')).run({ dryRun: dry, requireModule: !dry, only: a.project ? [a.project] : [] });
+      return r.error ? r : { ok: r.ok, dry_run: r.dryRun, written: r.written, failed: r.failed, recovery: r.recovery, lines: r.lines, pages: r.pages && r.pages.dir };
+    },
+  },
+  {
+    name: 'baton_protocol',
+    description: 'Read an operating protocol, or one of the Conductor\'s on-demand lesson blocks. Activation hands the Conductor a COMPACT protocol; the long, distilled lessons stay here so they cost nothing until needed. section: "conductor" (the compact protocol, default) · "master" · "all" (conductor + every block) · "playbook" · "verification" · "relaying" · "retractions" · "diagnosis" · "holds". Safe for any session; reading changes nothing.',
+    inputSchema: { type: 'object', properties: { section: { type: 'string', description: 'Which section. Default "conductor".' } } },
+    slaveSafe: true,
+    handler: async (a) => {
+      const mp = require(path.join(Baton, 'lib', 'master-protocol.js'));
+      const text = mp.protocolSection(a.section);
+      if (text == null) return { error: 'NO_SUCH_SECTION', sections: ['conductor', 'master', 'all', ...mp.SECTION_NAMES] };
+      return { ok: true, section: String(a.section || 'conductor').toLowerCase(), chars: text.length, text };
+    },
+  },
+  {
+    name: 'baton_wakes',
+    description: 'MASTERS AND THE CONDUCTOR. Is a session\'s prompt cache still WARM, and how many of the day\'s session-to-session wakes landed COLD? A message wakes its target; inside the cache window (about an hour since its last model reply) the wake re-reads its context from cache, after it the whole context is written again — roughly 20x the cost. With session_ids: warmth per session (warm, minutesLeft) — check before any send that is not urgent, and if the target is cold hold the message for its next real one. Without: the daily metric — wakes in the last `hours` (default 24), warm vs cold, cold ones counted by sender, the woken turns\' real cache tokens; `baton` = the wakes Baton itself sent (chase, keepalive, notify, compact) by kind and warmth; `lastRollup` = the last line of the daily roll-up. Reads transcript tails and logs only; opens nothing.',
+    inputSchema: { type: 'object', properties: {
+      session_ids: { type: 'array', items: { type: 'string' }, description: 'local_… ids to check for warmth now.' },
+      hours: { type: 'number', description: 'Window for the daily metric (default 24).' },
+    } },
+    handler: async (a) => {
+      const wakes = require(path.join(Baton, 'lib', 'wakes.js'));
+      if (Array.isArray(a.session_ids) && a.session_ids.length) return { ok: true, windowMinutes: wakes.WINDOW_MIN, warmth: await wakes.warmth(a.session_ids) };
+      return { ok: true, ...wakes.daily({ hours: a.hours }), baton: wakes.forwardLog({ hours: a.hours }), lastRollup: wakes.lastRollup() };
+    },
+  },
+  {
+    name: 'baton_hygiene',
+    description: 'MASTERS AND THE CONDUCTOR. What each live session\'s CONTEXT needs done, from the last hygiene pass (every 30 min): COMPACT (mid-task, over the threshold, its state authored on disk — the only verdict ever acted on, and only in its last warm cycle), WRITE-STATE-FIRST (compaction would destroy what is not written down), ROTATE (compacted too often), NEW-SESSION (task ended), ARCHIVE (dormant), HOLD-AWAITING / HOLD-ASK-PENDING (narrow vs broad — never quote the union), HOLD-RUNNING. Also the funnel that explains the COMPACT count, sessions with nothing written down, and /compact sends that never took. Read-only. verdict filters the items; refresh:true runs a pass now (no sends).',
+    inputSchema: { type: 'object', properties: {
+      verdict: { type: 'string', description: 'Only items with this verdict (e.g. COMPACT, WRITE-STATE-FIRST).' },
+      refresh: { type: 'boolean', description: 'Run a report pass now instead of reading the last one (never sends /compact).' },
+    } },
+    handler: async (a) => {
+      const hy = require(path.join(Baton, 'lib', 'hygiene.js'));
+      if (a.refresh) { const r = await hy.cycle({ force: true, module: true, settings: { autoCompact: false } }); if (!r.ok) return { error: 'NOT_RUN', message: r.error }; }
+      const j = hy.read();
+      if (!j) return { error: 'NO_REPORT', message: 'No hygiene pass yet. Call again with refresh:true, or turn on the hygiene module.' };
+      const want = a.verdict ? String(a.verdict).toUpperCase() : null;
+      const items = (j.items || []).filter(i => want ? i.verdict === want : i.verdict !== 'OK').slice(0, 60);
+      return { ok: true, at: j.at, counts: j.counts, awaiting: j.awaiting, funnel: j.funnel, unverified: j.unverified, compact: j.compact,
+        noState: (j.no_state || []).slice(0, 20), items, report: hy.REPORT_MD() };
     },
   },
 
@@ -306,7 +555,7 @@ const TOOLS = [
         prompt: { type: 'string', description: 'The task for the worker. Be specific and self-contained: the worker does not share your conversation.' },
         title: { type: 'string', description: 'Short label for the dashboard.' },
         cwd: { type: 'string', description: 'Working directory for the worker. Defaults to the daemon cwd.' },
-        model: { type: 'string', enum: ['claude-opus-5-5', 'haiku', 'sonnet', 'opus'], description: 'Override the routed model. Omit to let the router decide: Opus 5.5 (claude-opus-5-5) graded by effort — easy low, a little tougher medium, genuinely hard high. The bare aliases remain for compatibility only.' },
+        model: { type: 'string', description: 'A model id or Desktop picker name; omit to use the level mapped in Settings › Models.' },
         effort: { type: 'string', enum: ['low', 'medium', 'high', 'max'], description: 'Override the routed reasoning effort.' },
         isolate: { type: 'boolean', description: 'Force a fresh session with no reused context.' },
         dispatch: { type: 'string', enum: ['gui', 'headless'], description: 'Force the dispatch route. Omit to let a live CLI auth probe decide (headless when the CLI is logged in, GUI when it is not).' },
@@ -360,7 +609,7 @@ const TOOLS = [
   },
   {
     name: 'baton_escalate',
-    description: 'MASTER ONLY. Move a task up one rung of the model/effort ladder (haiku/low → haiku/medium → sonnet/medium → sonnet/high → opus/high → opus/max) and re-run it with a fresh context. Use when a worker returned a weak or wrong answer.',
+    description: 'MASTER ONLY. Move a task one difficulty level up (easy → medium → hard → extraHard), using the model + effort mapped to each level in Settings › Models, and re-run it with a fresh context. Use when a worker returned a weak or wrong answer.',
     inputSchema: { type: 'object', properties: { taskId: { type: 'string' } }, required: ['taskId'] },
     handler: async (a) => {
       const r = await daemon('POST', `/api/task/${a.taskId}/escalate`);
@@ -411,21 +660,36 @@ const TOOLS = [
         topic: { type: 'string', description: "What you are about to send, in the user's words where you have them." },
         target: { type: 'string', description: 'Optional: the session id you were about to send to. Turns this into an allow/refuse check.' },
         project: { type: 'string', description: 'Optional project hint when you already know the lane (e.g. "web-app", "docs").' },
+        session: { type: 'string', description: 'Optional: a session the USER named. A named session always wins.' },
+        grep: { type: 'string', description: 'Optional: a DISTINCTIVE pattern (an id, error code, filename) to grep every transcript for; sessions are boosted by hit count. A miss proves nothing.' },
       },
       required: ['topic'],
     },
     slaveSafe: true,
     handler: async (a) => {
       const owner = require(path.join(Baton, 'lib', 'owner.js'));
-      const opts = { project: a.project || null, exclude: ME || null };
-      return a.target ? owner.check(a.topic || '', a.target, opts) : owner.resolve(a.topic || '', opts);
+      if (!String(config.get().ownerIndex || '').trim()) {
+        try { await require(path.join(Baton, 'lib', 'projects.js')).fresh(30 * 60000); } catch {}
+      }
+      // explicit ids in the topic win; aliases, learned dispatches and scheduled-task owners boost;
+      // two lanes too close to call come back AMBIGUOUS instead of a guess
+      const opts ={ project: a.project || null, exclude: ME || null, session: a.session || null, grep: a.grep || null };
+      const r = await owner.resolveWithGrep(a.topic || '', opts);
+      return a.target ? { ...owner.check(a.topic || '', a.target, { ...opts, resolved: r }), grep: r.grep } : r;
     },
   },
   {
     name: 'baton_archive_candidates',
-    description: 'MASTER ONLY. List sessions eligible for archiving: idle past the threshold, not running, not awaiting input, and already read. Sessions that are running, asking a question, or unread are NEVER listed — unseen work must not be archived away. This only REPORTS candidates; archiving itself is done with the ccd_session_mgmt archive_session tool, which asks the user to confirm.',
-    inputSchema: { type: 'object', properties: { idle_days: { type: 'number', description: 'Override the default 7-day idle threshold.' } } },
+    description: 'MASTER ONLY. List sessions safe to ARCHIVE, each with its reason: SUPERSEDED (a newer session in the same project does its work — titles overlap and its digest names or repeats this one), WORKER-DONE (its master is archived/ended/gone, or it signed off with a completion report), DISPOSABLE (a probe/test/scratch title; patterns in settings archive.disposablePatterns), CONTEXT-FULL-AND-ENDED. Gate: a sidebar row that is not running, unread or awaiting (live state unknown also holds it back), whose last turn ENDED, idle more than idle_days (default 14, settings archive.idleDays), and never a master with a live child. Writes ARCHIVE-CANDIDATES.md with per-reason sections, ready baton_archive calls and a held-back list. It archives NOTHING: show the user the list first; archive only what they approve.',
+    inputSchema: { type: 'object', properties: { idle_days: { type: 'number', description: 'Override the idle threshold in days (default 14).' } } },
     handler: async (a) => {
+      let ix = null;
+      try { ix = await require(path.join(Baton, 'lib', 'projects.js')).fresh(30 * 60000); } catch {}
+      if (ix && ix.sessions) {
+        const r = require(path.join(Baton, 'lib', 'archive.js')).report({ index: ix, days: a.idle_days });
+        if (!r.error) return r;
+      }
+      // No project index: the snapshot-only list (fewer reasons, same safety gate on running/awaiting/unread).
       const snap = desktop.loadSnapshot();
       if (!snap) return { error: 'NO_SNAPSHOT' };
       const thr = a.idle_days;
@@ -449,7 +713,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         session_ids: { type: 'array', items: { type: 'string' }, description: 'Sessions to retarget.' },
-        model: { type: 'string', enum: ['claude-opus-5-5', 'opus', 'sonnet', 'haiku', 'fable'], description: 'claude-opus-5-5 is the default model. A bare alias re-points whenever a new release ships.' },
+        model: { type: 'string', description: 'A model id or a name as it appears in the Desktop model picker (e.g. "opus", "sonnet"). A bare alias re-points whenever a new release ships.' },
         protect: { type: 'boolean', description: 'Skip sessions carrying an unread/awaiting marker instead of opening them.' },
       },
       required: ['session_ids', 'model'],
@@ -516,7 +780,7 @@ const TOOLS = [
   {
     name: 'baton_fast_mode',
     description: [
-      'READ or CHANGE fast mode. Reading is safe for any session; CHANGING is MASTER ONLY.',
+      'READ or CHANGE fast mode. Reading is safe for any session; CHANGING is for a master or the Conductor.',
       '',
       'WHAT IT IS: fast mode serves the SAME model (Opus) with faster output. It is not a smaller model and not a model choice, which is why it sits BESIDE the model and effort pickers rather than inside them — the composer footer reads "Opus 5 · Fast · High".',
       '',
@@ -556,7 +820,7 @@ const TOOLS = [
       };
       if (a.on === undefined) return Object.assign({ ok: true, read: true }, view);
 
-      if (!isMaster()) return { error: 'MASTER_ONLY', message: 'Reading fast mode is open to any session; changing it is master only. Call baton_become_master first, and only if the user asked.', current: view };
+      if (!access.canChangeFastMode(myRole())) return { error: 'MASTER_ONLY', message: 'Reading fast mode is open to any session; changing it is for a master or the Conductor. Call baton_become_master first, and only if the user asked.', current: view };
 
       const CONDUCTOR = config.get().conductorSession || null;
       const handle = a.session_id
@@ -789,12 +1053,12 @@ const TOOLS = [
       }
 
       if (a.adopt !== false && started.length) {
-        const m = loadMaster();
-        if (m) { m.fleet = [...new Set([...(m.fleet || []), ...started])]; saveMaster(m); r.adopted = started; }
+        const got = access.adopt(started, { role: myRole(), claim: loadMaster(), saveMaster });
+        if (got && got.length) r.adopted = got;
       }
 
       if (started.length) {
-        r.reportLine = reportLine(ME);
+        r.reportLine = isConductor() && !isMaster() ? require(path.join(Baton, 'lib', 'master-protocol.js')).conductorReportLine(ME) : reportLine(ME);
         r.reporting = 'If the chip prompt did not already end with this reportLine, send it to each started session now with ccd_session_mgmt send_message — otherwise the slave may report to the wrong session.';
       }
       if (started.length) r.doneMeans = 'Confirm this session actually delivered before reporting it done: archiving a running session kills it, and the result is indistinguishable from success. Check the files it was told to write, or read it with ccd_session_mgmt list_events.';
@@ -867,7 +1131,7 @@ const TOOLS = [
   },
   {
     name: 'baton_fleet',
-    description: 'MASTER ONLY. Show or edit this master\'s fleet — the set of sessions and tasks it is coordinating. Adopt existing Desktop sessions into the fleet so you can track them alongside workers you spawned.',
+    description: 'MASTERS AND THE CONDUCTOR. Show or edit this master\'s fleet — the set of sessions and tasks it is coordinating. Adopt existing Desktop sessions into the fleet so you can track them alongside workers you spawned. The Conductor gets its own list (the sessions it started or goaled) PLUS a read of every master\'s fleet, so it can see who holds what before routing or goaling.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -877,18 +1141,24 @@ const TOOLS = [
     },
     handler: async (a) => {
       const m = loadMaster();
-      if (!m) return { error: 'NO_CLAIM' };
-      let fleet = m.fleet || [];
-      if (a.adopt) fleet = [...new Set([...fleet, ...a.adopt])];
-      if (a.drop) fleet = fleet.filter(x => !a.drop.includes(x));
-      m.fleet = fleet; saveMaster(m);
+      const role = myRole();
+      if (!m && role !== 'CONDUCTOR') return { error: 'NO_CLAIM' };
+      if (a.adopt) access.adopt(a.adopt, { role, claim: m, saveMaster });
+      if (a.drop) access.drop(a.drop, { role, claim: m, saveMaster });
+      const fleet = access.fleetOf({ role, claim: m });
       const snap = desktop.loadSnapshot();
-      const detail = fleet.map(id => {
+      const describe = (ids) => ids.map(id => {
         if (/^t\d+$/.test(id)) { const t = registry.getTask(id); return t ? { kind: 'task', id, title: t.title, status: t.status, model: `${t.model}/${t.effort}` } : { kind: 'task', id, missing: true }; }
         const s = snap && snap.sessions.find(x => x.sessionId === id);
         return s ? { kind: 'session', id, title: s.title, state: s.state, group: s.group } : { kind: 'session', id, missing: true };
       });
-      return { fleetSize: fleet.length, fleet: detail };
+      const out = { fleetSize: fleet.length, fleet: describe(fleet) };
+      if (role === 'CONDUCTOR') {
+        out.role = 'CONDUCTOR';
+        out.masters = Object.entries(loadAll()).map(([project, mm]) => ({ project, sessionId: mm.sessionId, scope: mm.sessionTitle, isMe: mm.sessionId === ME,
+          fleetSize: (mm.fleet || []).length, fleet: describe(mm.fleet || []) }));
+      }
+      return out;
     },
   },
   {
@@ -928,11 +1198,11 @@ const TOOLS = [
   },
   {
     name: 'baton_goal',
-    description: 'MASTER ONLY. Set, read or clear a Claude Code GOAL (`/goal`) on a session IN YOUR OWN FLEET.\n\nWHAT A GOAL IS: a session-scoped completion condition. After every turn a small fast model judges whether it holds; while it does not, the session starts another turn on its own instead of handing control back. It clears itself when the condition is met, when the evaluator judges it impossible, or on an unrecoverable error. It is the one lever that keeps a slave working without you prompting each step — so use it for work with a VERIFIABLE end state ("every call site compiles and `npm test` exits 0"), not for open-ended instructions. The evaluator only reads what that session has surfaced in its OWN conversation; it runs no commands and reads no files, so write a condition its own output can demonstrate. Bound it ("... or stop after 20 turns") whenever the end state is not certain to arrive.\n\nWHY THIS TOOL EXISTS AND ccd_session_mgmt send_message DOES NOT DO IT: that call, and Baton\'s own bridge, hand text straight to the target\'s agent loop. Slash commands are resolved in the RENDERER by the composer\'s suggestion plugin, so "/goal ..." delivered that way arrives as PROSE. The session then discusses a goal that does not exist — a silent failure with no error anywhere. This types the command into the real composer.\n\nPROOF, NOT OPTIMISM. ok:true means the APP printed its own answer — read `verdict`: "Goal set: <condition>", "Goal active: <condition> (N turns)", "Goal cleared: ...", "No goal set". That is read from the app\'s message buffer and accepted only from a `<synthetic>` message, i.e. the app itself; a session writing "Acknowledged. Goal set: ..." in its own prose is NOT accepted (that forgery was observed live). If it cannot be proven the result is ok:false / "unverified" and you must treat the goal as NOT set.\n\nIT QUEUES; YOU DO NOT WAIT. A mid-turn session is fine: the command queues, runs when the turn ends, and this call blocks until the app answers (default 15 min, `wait_ms` to change, one hour ceiling). Waiting costs nothing and holds no UI lane — do not write a retry loop around this.\n\nCOSTS AND MANNERS: setting a goal starts a turn immediately and the session keeps taking turns until the evaluator is satisfied — spend in someone else\'s session, continuing with nobody watching. Clear it when you abandon the plan. NEVER goal a session doing something irreversible (a payment run, a send, a delete): a goal will push it past the point where a human should have looked. It opens the target to type, which clears its unread dot, and restores the previous view. `dry_run:true` proves the command composes and is recognised without sending.',
+    description: 'MASTERS AND THE CONDUCTOR. Set, read or clear a Claude Code GOAL (`/goal`) on a session IN YOUR OWN FLEET — the Conductor may goal ANY session, including one in a master\'s fleet (the result names that master so you can tell it).\n\nWHAT A GOAL IS: a session-scoped completion condition. After every turn a small fast model judges whether it holds; while it does not, the session starts another turn on its own instead of handing control back. It clears itself when the condition is met, when the evaluator judges it impossible, or on an unrecoverable error. It is the one lever that keeps a slave working without you prompting each step — so use it for work with a VERIFIABLE end state ("every call site compiles and `npm test` exits 0"), not for open-ended instructions. The evaluator only reads what that session has surfaced in its OWN conversation; it runs no commands and reads no files, so write a condition its own output can demonstrate. Bound it ("... or stop after 20 turns") whenever the end state is not certain to arrive.\n\nWHY THIS TOOL EXISTS AND ccd_session_mgmt send_message DOES NOT DO IT: that call, and Baton\'s own bridge, hand text straight to the target\'s agent loop. Slash commands are resolved in the RENDERER by the composer\'s suggestion plugin, so "/goal ..." delivered that way arrives as PROSE. The session then discusses a goal that does not exist — a silent failure with no error anywhere. This types the command into the real composer.\n\nPROOF, NOT OPTIMISM. ok:true means the APP printed its own answer — read `verdict`: "Goal set: <condition>", "Goal active: <condition> (N turns)", "Goal cleared: ...", "No goal set". That is read from the app\'s message buffer and accepted only from a `<synthetic>` message, i.e. the app itself; a session writing "Acknowledged. Goal set: ..." in its own prose is NOT accepted (that forgery was observed live). If it cannot be proven the result is ok:false / "unverified" and you must treat the goal as NOT set.\n\nIT QUEUES; YOU DO NOT WAIT. A mid-turn session is fine: the command queues, runs when the turn ends, and this call blocks until the app answers (default 15 min, `wait_ms` to change, one hour ceiling). Waiting costs nothing and holds no UI lane — do not write a retry loop around this.\n\nCOSTS AND MANNERS: setting a goal starts a turn immediately and the session keeps taking turns until the evaluator is satisfied — spend in someone else\'s session, continuing with nobody watching. Clear it when you abandon the plan. NEVER goal a session doing something irreversible (a payment run, a send, a delete): a goal will push it past the point where a human should have looked. It opens the target to type, which clears its unread dot, and restores the previous view. `dry_run:true` proves the command composes and is recognised without sending.',
     inputSchema: {
       type: 'object',
       properties: {
-        session_id: { type: 'string', description: 'The session to act on (local_… id). Must be in YOUR fleet — use baton_fleet to adopt it first if it is not.' },
+        session_id: { type: 'string', description: 'The session to act on (local_… id). A master: must be in YOUR fleet — use baton_fleet to adopt it first if it is not. The Conductor: any session.' },
         condition: { type: 'string', description: 'The completion condition to set. Up to 4000 chars, collapsed to one line. Omit for a status read.' },
         action: { type: 'string', enum: ['set', 'status', 'clear'], description: 'set (default when condition is given) · status (bare /goal — the condition, turns elapsed and the evaluator\'s last reason) · clear.' },
         wait_ms: { type: 'number', description: 'How long to wait for the app\'s own answer (default 900000 = 15 min, max 3600000). A command queued behind a long turn cannot answer until that turn ends.' },
@@ -944,14 +1214,14 @@ const TOOLS = [
     },
     handler: async (a) => {
       const m = loadMaster();
-      if (!m) return { error: 'NO_CLAIM' };
+      const role = myRole();
+      if (!m && role !== 'CONDUCTOR') return { error: 'NO_CLAIM' };
       const action = a.action || (a.condition ? 'set' : 'status');
 
-      const fleet = new Set(m.fleet || []);
-      if (action === 'set' && !fleet.has(a.session_id) && !a.force) {
-        return { error: 'NOT_IN_YOUR_FLEET', sessionId: a.session_id, fleetSize: fleet.size,
-                 message: 'That session is not in your fleet, and a goal makes it work unsupervised. Adopt it first with baton_fleet adopt:["' + a.session_id + '"] if it is yours, or ask the master that owns it. force:true overrides.' };
-      }
+      // A master goals only its own fleet; the Conductor may goal any session (access.goalGuard).
+      const fleet = new Set(access.fleetOf({ role, claim: m }));
+      const refused = access.goalGuard({ role, fleet, sessionId: a.session_id, action, force: a.force });
+      if (refused) return refused;
 
       let active = [];
       if (action === 'set' && !a.force) {
@@ -976,6 +1246,11 @@ const TOOLS = [
       if (r && typeof r === 'object') {
         delete r.tail;
         if (action === 'set' && r.ok) r.note = 'That session is now taking turns on its own until the evaluator is satisfied. baton_goal action:"status" to see its progress, action:"clear" to stop it.';
+        if (action === 'set' && r.ok && role === 'CONDUCTOR' && !a.dry_run) {
+          access.adopt([a.session_id], { role, claim: m, saveMaster });
+          const owner = access.ownerMasterOf(a.session_id, loadAll());
+          if (owner && owner.sessionId !== ME) r.tellMaster = `That session is in the fleet of master ${owner.sessionId} (project "${owner.project}"). Tell that master in your next message to it, so two drivers do not steer one session.`;
+        }
       }
       audit(`GOAL_TOOL by ${ME}: ${action} ${a.session_id}${a.dry_run ? ' dry' : ''}${a.force ? ' FORCE' : ''} -> ${r && r.ok ? (r.verdict || r.result) : 'FAILED ' + (r && (r.result || r.error))}`);
       return r;
@@ -983,7 +1258,7 @@ const TOOLS = [
   },
   {
     name: 'baton_await',
-    description: 'MASTER ONLY. WAKE ME when the sessions/tasks I name have finished. Use it when you have dispatched work and have nothing to do until it comes back.\n\nIT DOES NOT BLOCK, AND YOU MUST NOT POLL. It records a watch and returns immediately. The Baton daemon evaluates it every notify tick and, when everything you named has finished, delivers a WAKE straight into this conversation the same way fleet notifications arrive. So the correct thing to do after calling this is to STOP — end your turn. Checking back yourself is exactly the spend this exists to avoid.\n\nDO NOT SET A /goal ON YOURSELF TO WAIT. It looks like the elegant way to do this and it is wrong twice: the goal evaluator only reads what YOU have surfaced in your own conversation, so you would have to take a turn to check anything — which is polling with extra steps — and a master with an active goal keeps taking turns while its slaves work, which is the opposite of being parked. Use this tool.\n\nWHEN YOU CALL IT, SAY SO IN YOUR FINAL LINE: what you are parked on and roughly when you expect to be woken. If the wake never comes, that sentence is the only evidence anyone — the user reading the transcript, or the next Conductor — will have that you were waiting rather than finished.\n\nWHAT WAKES YOU: (a) everything you named has finished — a task reaching done/failed/cancelled, or a session that has stopped running (idle, unread, awaiting input, archived); (b) the DEADLINE passes, which is required and defaults to 2h — you are woken and told it expired, and nothing watches those ids afterwards; (c) ONE staleness nudge if something you are waiting on has been quiet for ~45 minutes, naming the ids, so a stuck slave does not turn into a silent deadlock. It over-notifies on purpose: a spurious wake costs a turn, a missed wake costs a task nobody notices is dead.\n\nOne live watch per master — parking again replaces the previous one. The watch is stored on disk and survives a daemon restart. `baton_status` shows what you are parked on, which matters after a compaction, when you will have forgotten.',
+    description: 'MASTERS AND THE CONDUCTOR. WAKE ME when the sessions/tasks I name have finished. Use it when you have dispatched work and have nothing to do until it comes back.\n\nIT DOES NOT BLOCK, AND YOU MUST NOT POLL. It records a watch and returns immediately. The Baton daemon evaluates it every notify tick and, when everything you named has finished, delivers a WAKE straight into this conversation the same way fleet notifications arrive. So the correct thing to do after calling this is to STOP — end your turn. Checking back yourself is exactly the spend this exists to avoid.\n\nDO NOT SET A /goal ON YOURSELF TO WAIT. It looks like the elegant way to do this and it is wrong twice: the goal evaluator only reads what YOU have surfaced in your own conversation, so you would have to take a turn to check anything — which is polling with extra steps — and a master with an active goal keeps taking turns while its slaves work, which is the opposite of being parked. Use this tool.\n\nWHEN YOU CALL IT, SAY SO IN YOUR FINAL LINE: what you are parked on and roughly when you expect to be woken. If the wake never comes, that sentence is the only evidence anyone — the user reading the transcript, or the next Conductor — will have that you were waiting rather than finished.\n\nWHAT WAKES YOU: (a) everything you named has finished — a task reaching done/failed/cancelled, or a session that has stopped running (idle, unread, awaiting input, archived); (b) the DEADLINE passes, which is required and defaults to 2h — you are woken and told it expired, and nothing watches those ids afterwards; (c) ONE staleness nudge if something you are waiting on has been quiet for ~45 minutes, naming the ids, so a stuck slave does not turn into a silent deadlock. It over-notifies on purpose: a spurious wake costs a turn, a missed wake costs a task nobody notices is dead.\n\nOne live watch per master — parking again replaces the previous one. The watch is stored on disk and survives a daemon restart. `baton_status` shows what you are parked on, which matters after a compaction, when you will have forgotten.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -996,7 +1271,7 @@ const TOOLS = [
     },
     handler: async (a) => {
       const m = loadMaster();
-      if (!m) return { error: 'NO_CLAIM' };
+      if (!m && myRole() !== 'CONDUCTOR') return { error: 'NO_CLAIM' };
 
       if (a.status) {
         const r = await daemon('GET', '/api/await');
@@ -1017,7 +1292,7 @@ const TOOLS = [
         return { error: 'CANNOT_AWAIT_SELF', message: 'You cannot be woken by your own session finishing; you are the thing that would have to finish.' };
       }
       const r = await daemon('POST', '/api/await', {
-        master_session_id: ME, project: m.project, waiting_on: a.waiting_on,
+        master_session_id: ME, project: m ? m.project : 'conductor', waiting_on: a.waiting_on,
         reason: a.reason, deadline_ms: a.deadline_ms,
       });
       audit(`AWAIT by ${ME}: ${a.waiting_on.join(',')} deadline=${r && r.watch ? r.watch.deadlineAt : '?'}`);
@@ -1073,14 +1348,195 @@ const TOOLS = [
       return out;
     },
   },
+  ...goalTools(),
 ];
+
+// Goal register tools (lib/goals.js). They read and write <data>/goals directly; the daemon's cycle
+// delivers hand-overs and chases. A slave may only report on, or close, goals it owns.
+function goalTools() {
+  const goals = () => require(path.join(Baton, 'lib', 'goals.js'));
+  const off = () => (!config.mod('goalChaser') && !config.mod('cacheKeeper'))
+    ? { error: 'MODULE_OFF', message: 'The goal chaser is off (Settings > Modules > Goal chaser).' } : null;
+  const privileged = () => isMaster() || isConductor();
+  const ownsOrPrivileged = (id) => {
+    if (privileged()) return null;
+    const g = goals().find(goals().load(), id);
+    if (!g) return { error: 'NO_SUCH_GOAL', id };
+    return g.ownerSessionId === ME ? null : { error: 'NOT_OWNER', message: `${id} is owned by ${g.ownerSessionId || 'nobody'}; only its owner, a master or the Conductor may change it.` };
+  };
+  const liveStates = async () => {
+    const { list, fresh } = await goals().defaultSessions(Date.now());
+    const map = new Map(list.map(s => [s.id, s]));
+    return (id) => goals().ownerState(id, map, fresh);
+  };
+  const ID = { type: 'string', description: 'Goal id, e.g. g12.' };
+  return [
+    {
+      name: 'baton_goal_add',
+      description: 'MASTER / CONDUCTOR. Add a goal to the Baton goal register. Without an owner it is routed through the project index to the session that owns the topic; if nobody does it waits on the Board as unrouted (or, with Settings goals.autoSpawn, a new session is started in the project folder). The daemon hands the goal to its owner in the next cycle and chases it until it is reported done.',
+      inputSchema: { type: 'object', required: ['title'], properties: {
+        title: { type: 'string', description: 'One line: what done looks like.' },
+        detail: { type: 'string', description: 'Context for the owner (capped at 4000 chars; the full text is kept in a side file).' },
+        checks: { type: 'array', items: { type: 'string' }, description: 'What must be true for it to count as done.' },
+        due: { type: 'string', description: 'Due date (ISO).' },
+        project: { type: 'string', description: 'Project name from baton_projects; helps routing.' },
+        owner: { type: 'string', description: 'A session id, or "self". Omit to route automatically.' },
+        verify_by: { type: 'string', description: 'A date on which the result must be checked again.' },
+        verify_what: { type: 'string', description: 'What to check on verify_by.' },
+      } },
+      handler: async (a) => {
+        const o = off(); if (o) return o;
+        const owner = a.owner === 'self' ? ME : (a.owner || null);
+        const r = goals().add({ title: a.title, detail: a.detail, checks: a.checks, due: a.due, project: a.project,
+          ownerSessionId: owner, told: !!owner && owner === ME, verifyBy: a.verify_by, verifyWhat: a.verify_what, source: 'mcp:' + (ME || '?') });
+        if (r.ok) audit(`GOAL_ADD by ${ME}: ${r.goal.id} -> ${r.goal.ownerSessionId || 'unrouted'}`);
+        return r;
+      },
+    },
+    {
+      name: 'baton_goals',
+      slaveSafe: true,
+      description: 'List goals in the Baton goal register, or show one with its condition, events and chases. Any session may read. `mine:true` lists the goals this session owns.',
+      inputSchema: { type: 'object', properties: {
+        id: ID, all: { type: 'boolean', description: 'Include closed goals.' }, mine: { type: 'boolean', description: 'Only goals this session owns.' },
+      } },
+      handler: async (a) => {
+        if (a.id) return goals().show(a.id);
+        let gs = goals().list({ all: !!a.all });
+        if (a.mine) gs = gs.filter(g => g.ownerSessionId === ME);
+        return { ok: true, goals: gs.map(g => ({ id: g.id, title: g.title, status: g.status, owner: g.ownerSessionId, project: g.project,
+          due: g.due, blockedOn: g.blockedOn, progress: g.progress, lastProgressAt: g.lastProgressAt, chases: g.chases })), ...goals().status() };
+      },
+    },
+    {
+      name: 'baton_goal_progress',
+      slaveSafe: true,
+      description: 'Report on a goal you own: "DONE: <evidence>" (marks it DELIVERED for the user to read and close; with goals.requireVerification off it closes), "BLOCKED on <what>" (the chaser stops and the Board shows it), or any other line as progress (clears a block). A reply in chat without a GOAL line is not a report.',
+      inputSchema: { type: 'object', required: ['id', 'report'], properties: { id: ID, report: { type: 'string' } } },
+      handler: async (a) => { const o = off() || ownsOrPrivileged(a.id); if (o) return o; return goals().report(a.id, a.report, { by: ME }); },
+    },
+    {
+      name: 'baton_goal_done',
+      slaveSafe: true,
+      description: 'Close a goal you own as done (or failed). Evidence is required; a closed goal cannot be closed again (use baton_goal_reopen).',
+      inputSchema: { type: 'object', required: ['id', 'evidence'], properties: { id: ID, evidence: { type: 'string' },
+        status: { type: 'string', enum: ['done', 'failed'] } } },
+      handler: async (a) => { const o = off() || ownsOrPrivileged(a.id); if (o) return o; return goals().close(a.id, { status: a.status || 'done', note: a.evidence, by: ME }); },
+    },
+    {
+      name: 'baton_goal_reopen',
+      description: 'MASTER / CONDUCTOR. Reopen a closed goal, with the reason.',
+      inputSchema: { type: 'object', required: ['id', 'reason'], properties: { id: ID, reason: { type: 'string' } } },
+      handler: async (a) => { const o = off(); if (o) return o; return goals().reopen(a.id, a.reason); },
+    },
+    {
+      name: 'baton_goal_verify',
+      slaveSafe: true,
+      description: 'Give a goal a verification date: once delivered it stays open (AWAITING-VERIFICATION) until verify_by, then shows on the Board as VERIFY-NOW. Owner, master or Conductor.',
+      inputSchema: { type: 'object', required: ['id', 'verify_by'], properties: { id: ID, verify_by: { type: 'string' }, verify_what: { type: 'string' } } },
+      handler: async (a) => { const o = off() || ownsOrPrivileged(a.id); if (o) return o; return goals().verify(a.id, a.verify_by, a.verify_what); },
+    },
+    {
+      name: 'baton_goal_judged',
+      description: 'MASTER / CONDUCTOR. Release a goal from the judgement queue (no answer to repeated chases, or reported done without evidence) so it is chased again. Say what you decided.',
+      inputSchema: { type: 'object', required: ['id', 'note'], properties: { id: ID, note: { type: 'string' } } },
+      handler: async (a) => { const o = off(); if (o) return o; return goals().judged(a.id, a.note); },
+    },
+    {
+      name: 'baton_goal_rehome',
+      description: 'MASTER / CONDUCTOR. Give a goal to another live session; it is told in the next cycle, with your reason. Refuses a goal the current owner already delivered, and a target that is not live.',
+      inputSchema: { type: 'object', required: ['id', 'target', 'why'], properties: { id: ID, target: { type: 'string' }, why: { type: 'string' } } },
+      handler: async (a) => {
+        const o = off(); if (o) return o;
+        const r = goals().rehome(a.id, a.target, a.why, { stateOf: await liveStates() });
+        if (r.ok) audit(`GOAL_REHOME by ${ME}: ${a.id} -> ${a.target}`);
+        return r;
+      },
+    },
+    {
+      name: 'baton_tell_user',
+      slaveSafe: true,
+      description: 'Leave a short note for the user on the Baton Board ("things to tell me"). Use it for something only the user can do or should know; they answer from the Board in a batch. kind: decide (needs an answer), do (needs their hands), fyi.',
+      inputSchema: { type: 'object', required: ['text'], properties: { text: { type: 'string' }, kind: { type: 'string', enum: ['decide', 'do', 'fyi'] } } },
+      handler: async (a) => {
+        if (!config.mod('board') && !config.mod('goalChaser')) return { error: 'MODULE_OFF', message: 'Turn on the Board or the Goal chaser module.' };
+        return goals().tell({ sessionId: ME, text: a.text, kind: a.kind });
+      },
+    },
+    ...inboxTools(),
+  ];
+}
+
+// Inbox tools (lib/inbox.js): the append-only list of things only the user can do. Item numbers never change.
+function inboxTools() {
+  const inbox = () => require(path.join(Baton, 'lib', 'inbox.js'));
+  const off = () => !config.mod('inbox')
+    ? { error: 'MODULE_OFF', message: 'The inbox module is off (Settings > Modules > Inbox).' } : null;
+  const N = { type: 'integer', description: 'Inbox item number (#n).' };
+  return [
+    {
+      name: 'baton_inbox_add',
+      slaveSafe: true,
+      description: 'Add an item to the user\'s inbox: something only the user can do or decide. text is kept VERBATIM (say what, why, and what you need). session: the lane it belongs to (defaults to this session for an ordinary session; the Conductor/master should name the lane, and gets a warning when it does not). ask_kind + ask: optional one-line imperative ask (<= 200 chars; the first ~178 show on the card). log:true files it as a record, not an action.',
+      inputSchema: { type: 'object', required: ['text'], properties: {
+        text: { type: 'string' }, session: { type: 'string', description: 'Session id the item is about.' },
+        ask_kind: { type: 'string', enum: ['decide', 'do', 'fyi'] }, ask: { type: 'string' }, log: { type: 'boolean' },
+      } },
+      handler: async (a) => {
+        const o = off(); if (o) return o;
+        const privileged = isMaster() || isConductor();
+        const session = a.session || (privileged ? null : ME);
+        const r = inbox().add(a.text, { session, kind: a.log ? 'log' : 'action', source: 'mcp:' + (ME || '?') });
+        if (r.ok && a.ask_kind && a.ask) {
+          const q = inbox().ask(r.n, a.ask_kind, a.ask);
+          if (!q.ok) r.warnings = (r.warnings || []).concat(['ask not set: ' + (q.message || q.error)]);
+          else if (q.warnings) r.warnings = (r.warnings || []).concat(q.warnings);
+        }
+        if (r.ok) audit(`INBOX_ADD by ${ME}: #${r.n}`);
+        return r;
+      },
+    },
+    {
+      name: 'baton_inbox',
+      slaveSafe: true,
+      description: 'Read the user\'s inbox: open items newest first (all:true includes closed), or one item with its history (n).',
+      inputSchema: { type: 'object', properties: { n: N, all: { type: 'boolean' } } },
+      handler: async (a) => {
+        const o = off(); if (o) return o;
+        if (a.n) return inbox().show(a.n);
+        return { ok: true, ...inbox().list({ all: !!a.all }) };
+      },
+    },
+    {
+      name: 'baton_inbox_update',
+      description: 'MASTER / CONDUCTOR. Change an inbox item: op = ask (kind + text, <= 200 chars), link (session), reopen (pins it: never auto-resolved), text (rewrite), note (append, never truncated), kind (log|action), done, drop, wait. The ledger is append-only; nothing is erased.',
+      inputSchema: { type: 'object', required: ['op', 'n'], properties: {
+        op: { type: 'string', enum: ['ask', 'link', 'reopen', 'text', 'note', 'kind', 'done', 'drop', 'wait'] },
+        n: N, text: { type: 'string' }, kind: { type: 'string' }, session: { type: 'string' },
+      } },
+      handler: async (a) => {
+        const o = off(); if (o) return o;
+        const I = inbox();
+        const ops = {
+          ask: () => I.ask(a.n, a.kind, a.text), link: () => I.link(a.n, a.session), reopen: () => I.reopen(a.n, a.text, { by: ME || 'mcp' }),
+          text: () => I.setText(a.n, a.text), note: () => I.note(a.n, a.text), kind: () => I.setKind([a.n], a.kind),
+          done: () => I.done(a.n, a.text), drop: () => I.drop(a.n, a.text), wait: () => I.wait(a.n, a.text),
+        };
+        if (!ops[a.op]) return { error: 'BAD_OP' };
+        const r = ops[a.op]();
+        if (r && r.ok) audit(`INBOX_${a.op.toUpperCase()} by ${ME}: #${a.n}`);
+        return r;
+      },
+    },
+  ];
+}
 
 const BY_NAME = Object.fromEntries(TOOLS.map(t => [t.name, t]));
 
 async function callTool(name, args) {
   const t = BY_NAME[name];
   if (!t) return { error: 'UNKNOWN_TOOL', name };
-  if (!t.slaveSafe && !isMaster()) return DENY(name);
+  if (!t.slaveSafe && !isMaster() && !isConductor()) return DENY(name);
   if (!t.slaveSafe) { const m = loadMaster(); if (m) { m.expiresAt = new Date(Date.now() + CLAIM_TTL_MS).toISOString(); saveMaster(m); } }
   try { return await t.handler(args || {}); }
   catch (e) { return { error: 'TOOL_FAILED', message: e.message }; }
@@ -1114,7 +1570,7 @@ async function handle(line) {
       protocolVersion: '2024-11-05',
       capabilities: { tools: { listChanged: true } },
       serverInfo: { name: 'baton', version: '1.0.0' },
-      instructions: 'Baton master orchestrator. Every session is a SLAVE by default and may only call baton_status, baton_route_preview, baton_route_owner and baton_become_master. BEFORE sending a topic to another session (ccd_session_mgmt send_message), call baton_route_owner with that topic and the target id: it refuses non-owners and names who actually owns it, or hands back a spawn plan when nobody does. Call baton_become_master ONLY when the user explicitly asks this session to act as the master/coordinator; it returns the standing operating protocol every master must follow, and unlocks the control tools (baton_spawn, baton_list_sessions, baton_tasks, baton_escalate, baton_fleet, baton_archive_candidates, baton_set_group/model/effort, and baton_pending_tasks / baton_start_task / baton_dismiss_task for background-task chips). baton_fast_mode READS fast mode from any session (it is a GLOBAL switch, and it reports on | off | unavailable | unknown rather than a silent no-op) and a master can change it. To read another session use ccd_session_mgmt list_events (does not clear its unread dot); to instruct one use ccd_session_mgmt send_message.',
+      instructions: 'Baton master orchestrator. Every session is a SLAVE by default and may only call baton_status, baton_route_preview, baton_route_owner and baton_become_master. BEFORE sending a topic to another session (ccd_session_mgmt send_message), call baton_route_owner with that topic and the target id: it refuses non-owners and names who actually owns it, or hands back a spawn plan when nobody does. Call baton_become_master ONLY when the user explicitly asks this session to act as the master/coordinator; it returns the standing operating protocol every master must follow, and unlocks the control tools (baton_spawn, baton_list_sessions, baton_tasks, baton_escalate, baton_fleet, baton_archive_candidates, baton_set_group/model/effort, and baton_pending_tasks / baton_start_task / baton_dismiss_task for background-task chips). ONE session may be the Conductor above all projects: baton_become_conductor, again only when the user asks; it and every master can read the project index with baton_projects. baton_fast_mode READS fast mode from any session (it is a GLOBAL switch, and it reports on | off | unavailable | unknown rather than a silent no-op) and a master can change it. To read another session use ccd_session_mgmt list_events (does not clear its unread dot); to instruct one use ccd_session_mgmt send_message. Masters and the Conductor also get: the goal register (baton_goal_add, baton_goals, baton_goal_progress/done/reopen/verify/judged/rehome), the user inbox (baton_inbox_add first on every user request, baton_inbox, baton_inbox_update) and baton_tell_user, the index views (baton_session_card, baton_progress, baton_buried, baton_learn, baton_tag, baton_dispatch_log), context care (baton_hygiene, baton_wakes, baton_overview) and baton_protocol {section} for the full rulebook.',
     } });
   }
   if (method === 'notifications/initialized') {

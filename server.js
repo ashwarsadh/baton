@@ -16,6 +16,10 @@ const heal = require('./lib/heal');
 const goal = require('./lib/goal');
 const awaits = require('./lib/await');
 const config = require('./lib/config');
+const projects = require('./lib/projects');
+const organizer = require('./lib/organizer');
+const goals = require('./lib/goals');
+const boardBuild = require('./lib/board-build');
 
 try { process.chdir(require('os').homedir()); } catch {}
 const PORT = config.get().port;
@@ -27,6 +31,8 @@ const CHIPWATCH_MS = Number(process.env.BATON_CHIPWATCH_MS || 60000);
 const idleMinMs = () => Number(process.env.BATON_IDLE_MIN_MS ?? (config.get().idleGateSeconds * 1000));
 
 const serialise = desktop.serializeUi;
+// Every master notification is a wake: log it (with the warmth it went at) in <data>/conductor/wakes.jsonl.
+try { const prevSend = notify._setSender(); notify._setSender(require('./lib/wakes').instrument(prevSend, 'notify')); } catch {}
 
 let lastDesktopErr = null;
 let lastChipwatch = null, lastUiQueue = null;
@@ -129,6 +135,91 @@ async function debuggerTick() {
   orch.log('debugger auto-enable: ' + (ok ? 'on again' : 'failed') + ' — ' + log.join('; '));
 }
 
+// The project index (lib/projects.js) is file reads only, so it runs outside the UI lane; the
+// organizer's moves drive the sidebar, so they run inside it, idle-gated per move.
+const INDEX_MS = 30 * 60000, ORGANIZE_MS = 5 * 60000;
+async function indexTick() {
+  if (!config.mod('orchestrator') && !config.mod('organizer')) return null;
+  try {
+    const intel = require('./lib/summarize');
+    const ix = await projects.build(intel.buildOpts());
+    // after the build (digests included): overviews, then the roles DB — its own lock, throttle and budgets, never awaited here
+    intel.cycle({ log: orch.log, rebuild: () => projects.build(intel.buildOpts()) }).catch(e => orch.log('intel cycle: ' + e.message));
+    // transcripts are read under a per-tick time budget; while a first index is still catching up,
+    // come back in a minute rather than in half an hour (one pending catch-up at a time)
+    if (ix && ix.transcripts && ix.transcripts.pending && !indexTick.catchUp) {
+      indexTick.catchUp = setTimeout(() => { indexTick.catchUp = null; indexTick(); }, 60000);
+    }
+    return ix;
+  }
+  catch (e) { orch.log('project index error: ' + e.message); return null; }
+}
+// Goal chaser + cache keeper: bridge sends need no UI, so only starting a new session is idle-gated
+// and serialised. The Board file is rebuilt on the same cycle.
+const GOALS_MS = 10 * 60000;
+let lastGoals = null;
+async function goalsTick() {
+  if (config.mod('goalChaser') || config.mod('cacheKeeper')) {
+    try {
+      lastGoals = await goals.tick({
+        spawn: (o) => serialise(() => require('./mobile/newsession').newSession(o)),
+        isIdle: () => desktop.isIdle(idleMinMs()),
+      });
+      if (lastGoals.sent.length || lastGoals.failed.length || lastGoals.spawned.length || lastGoals.done.length) {
+        orch.log(`goals: sent ${lastGoals.sent.map(s => s.kind + ' ' + s.sessionId + ' [' + s.goals.join(',') + ']').join('; ') || 'none'}` +
+          (lastGoals.failed.length ? `, failed ${lastGoals.failed.map(f => f.sessionId + ' ' + f.error).join('; ')}` : '') +
+          (lastGoals.done.length ? `, reports ${lastGoals.done.map(d => d.id + ' ' + d.kind).join(', ')}` : '') +
+          (lastGoals.spawned.length ? `, started ${lastGoals.spawned.map(s => s.id + ' -> ' + s.sessionId).join(', ')}` : ''));
+      }
+    } catch (e) { lastGoals = { at: new Date().toISOString(), error: e.message }; orch.log('goals error: ' + e.message); }
+  }
+  await hygieneTick();
+  if (config.mod('board')) {
+    try { const b = await boardBuild.build(); if (!b.written) orch.log('board: ' + b.reason); }
+    catch (e) { orch.log('board build error: ' + e.message); }
+  }
+}
+
+// Context hygiene (lib/hygiene.js): runs inside the goals cycle — index -> goals -> hygiene -> board — but
+// only every hygiene.intervalMinutes (30). Report files always; /compact only with module autoCompact, typed
+// through the composer inside the UI lane. It also writes the daily wake roll-up and ARCHIVE-CANDIDATES.md.
+let lastHygiene = null;
+async function hygieneTick() {
+  if (!config.mod('hygiene')) return;
+  try {
+    const r = await require('./lib/hygiene').cycle({ compact: (id) => serialise(() => require('./lib/hygiene').composerCompact(id)) });
+    if (r.skipped) return;
+    lastHygiene = r;
+    if (!r.ok) return orch.log('hygiene: ' + r.error);
+    if (r.compact && (r.compact.sent || r.compact.failed)) orch.log(`hygiene: /compact sent ${r.compact.sent}, failed ${r.compact.failed}` + (r.failures.length ? ' — ' + r.failures.map(f => f.id + ' ' + f.result).join('; ') : ''));
+    if (r.newUnverified.length) orch.log(`hygiene: /compact sent but NEVER took (no compaction after the verify window): ${r.newUnverified.join(', ')}`);
+  } catch (e) { lastHygiene = { at: new Date().toISOString(), error: e.message }; orch.log('hygiene error: ' + e.message); }
+}
+
+// Directives module (lib/directions.js): once a day at settings.directives.runAt, rebuild the owner's
+// own words per project from the digests and regenerate each project's DIRECTIVES.md. File work only.
+const DIRECTIVES_MS = 10 * 60000;
+function directivesTick() {
+  if (!config.mod('directives')) return;
+  try {
+    const r = require('./lib/directions').tick();
+    if (r) orch.log(`directives: ${r.ok ? 'ok' : 'FAILED'} — ${r.error ? r.error + ' ' + (r.message || '') : `${r.written} written, ${r.failed} failed`}` +
+      ((r.lines || []).filter(l => / (restore-failed|conflict|kept-edited-above|error)\b|^NOTHING/.test(l)).map(l => '; ' + l.trim()).join('')));
+  } catch (e) { orch.log('directives error: ' + e.message); }
+}
+
+async function organizerTick() {
+  if (!config.mod('organizer')) return;
+  const index = await indexTick();
+  if (!index) return;
+  const r = await serialise(() => organizer.tick({ index, isIdle: () => desktop.isIdle(idleMinMs()) }))
+    .catch(e => ({ moved: [], failed: [], skipped: 'error: ' + e.message }));
+  if (r.moved.length || r.failed.length) {
+    orch.log(`organizer: moved ${r.moved.length}, failed ${r.failed.length}` + (r.skipped ? ` (stopped: ${r.skipped})` : '') +
+      ' — ' + r.moved.map(m => `${m.sessionId} -> ${m.group}`).join(', '));
+  }
+}
+
 let lastResume = null;
 async function resumeTick() {
   if (!config.mod('autoResume')) return;
@@ -188,9 +279,16 @@ const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, `http://127.0.0.1:${PORT}`);
 
+    // Loopback programs only: refuses other websites (Origin) and DNS rebinding (Host). lib/control-guard.js
+    const refused = require('./lib/control-guard').check(req, PORT);
+    if (refused) return json(res, refused.status, refused.body);
+
     if (req.method === 'GET' && u.pathname === '/') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      return res.end(HTML);
+      // The control dashboard: submit with a live route preview, per-task stop/escalate, sessions by group.
+      let page = HTML;
+      try { page = fs.readFileSync(path.join(__dirname, 'lib', 'dashboard.html'), 'utf8').replace(/__APP_PORT__/g, String(Number(config.get().appPort))); } catch {}
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'X-Frame-Options': 'DENY', 'Cache-Control': 'no-store' });
+      return res.end(page);
     }
 
     if (req.method === 'GET' && u.pathname === '/api/state') {
@@ -295,6 +393,7 @@ const server = http.createServer(async (req, res) => {
         isolate: body.isolate, noReuse: body.noReuse, dependsOn: body.dependsOn,
         dispatch: body.dispatch,
         masterId: body.masterId || null,
+        maxAttempts: Number(body.maxAttempts) > 0 ? Number(body.maxAttempts) : undefined,
       });
       Promise.resolve(orch.pump()).catch(e => orch.log('pump error: ' + e.message));
       return json(res, 200, { ok: true, task: t });
@@ -517,7 +616,16 @@ async function evictWedgedHolder(reason) {
     setInterval(() => serialise(chipwatchTick), CHIPWATCH_MS);
     setInterval(() => serialise(uiQueueTick), 45000);
     setInterval(() => serialise(debuggerTick), 60000);
+    setInterval(() => { if (config.mod('accounts')) require('./lib/account-sync').autoTick().then(r => { if (r && (r.applied || r.error)) orch.log('accounts auto-sync: ' + (r.error || r.applied + ' change(s) written')); }).catch(e => orch.log('accounts auto-sync: ' + e.message)); }, 15000);
+    // Boot window: Desktop not running yet when Baton starts -> the pass that waits for a closed Desktop runs now.
+    if (config.mod('accounts')) require('./lib/account-sync').bootPass().then(r => { if (r && (r.applied || r.error)) orch.log('accounts boot pass: ' + (r.error || (r.applied.count || 0) + ' change(s) written')); }).catch(e => orch.log('accounts boot pass: ' + e.message));
     setTimeout(() => serialise(resumeTick), 20000);
+    setInterval(() => { if (!config.mod('organizer')) indexTick(); }, INDEX_MS);
+    setInterval(organizerTick, ORGANIZE_MS);
+    setTimeout(() => (config.mod('organizer') ? organizerTick() : indexTick()), 90000);
+    setInterval(goalsTick, GOALS_MS);
+    setTimeout(goalsTick, 120000);
+    setInterval(directivesTick, DIRECTIVES_MS);
 
     try {
       if (config.mod('app')) require('./mobile')();

@@ -35,9 +35,21 @@
 | App | `mobile/` — HTTP server, server-sent events, push (`mobile/push.js`), the web app in `mobile/public/` |
 | Auto-resume | `lib/resume.js` — usage-limit and crash resume |
 | Orchestrator | `lib/orchestrator.js`, `lib/worker.js`, `lib/gui-worker.js`, `lib/router.js`, `mcp/baton-mcp.js` |
-| Wake the master | `lib/notify.js`, `lib/await.js`, `lib/goal.js` |
+| Wake the master | `lib/notify.js`, `lib/await.js`, `lib/goal.js` (types `/goal` and `/compact` into the real composer) |
 | Auto-start chips | `lib/chipwatch.js` |
-| Board | `mobile/board.js`, `mobile/public/board-ui.js` |
+| Board | `lib/board-build.js` (writes `board.json` + `board.html`), `mobile/board.js`, `mobile/public/board-ui.js` |
+| Inbox | `lib/inbox.js` — append-only numbered inbox, auto-resolve, board answers landed on cards |
+| Goal chaser + cache keeper | `lib/goals.js` (append-only `goals.jsonl` ledger, health, warm/cold chase, re-home), `lib/wakes.js`, `mobile/public/goals-ui.js` |
+| Project index | `lib/projects.js`, `lib/transcripts.js` (incremental transcript parse), `lib/digests.js`, `lib/index-views.js` (INDEX.md, wiki, map.html), `lib/aliases.js`, `lib/ostasks.js`, `lib/owner.js` (who owns a topic) |
+| Organizer | `lib/organizer.js` |
+| Conductor | `lib/master-protocol.js` (protocol + rule sections), `lib/conductor-access.js` |
+| Context hygiene | `lib/hygiene.js` (verdicts, safe auto-/compact), `lib/archive.js` (archive candidates) |
+| Overviews and roles | `lib/engine.js` (pluggable model engine, off by default), `lib/summarize.js`, `lib/roles.js` |
+| Directives | `lib/directions.js` |
+| Accounts | `lib/account-sync.js`, `lib/account-sync/*`, `lib/account-scope.js`, `mobile/accounts.js` |
+| Alerts | `mobile/push.js`, `mobile/alerts.js` (ntfy / webhook / command backup, rate cap) |
+| Finish-the-task hook | `hooks/finish-the-task.js`, `hooks/install.js` |
+| Operations | `lib/heal.js`, `lib/launch.js`, `scripts/register-autostart.ps1`, `lib/salvage.js`, `lib/import-ago.js` (import from the predecessor's state format), `lib/dashboard.html` (loopback control page) |
 | Remote access | `lib/tunnel.js` (cloudflared), `lib/pair.js` (links + QR), `mobile/access.js` (Cloudflare Access) |
 | Settings | `lib/config.js` (`~/.baton/settings.json`, hot-reloaded), `mobile/public/settings-ui.js` |
 
@@ -46,7 +58,8 @@
 `baton_spawn` runs a task either **headless** (`claude -p`, fast, invisible, needs the Claude Code
 CLI to be logged in) or as a **visible Desktop session** (uses the account you are signed in to in
 the app). `auto` picks headless when the CLI is logged in. Model and effort are chosen per task by
-`lib/router.js` from the default model in Settings; a failed task can be escalated one rung.
+`lib/router.js` from the difficulty levels in Settings › Models (easy / medium / hard / extra hard); a failed
+task can be escalated one level.
 
 ## Resume
 

@@ -1,5 +1,8 @@
 # tray.ps1 - Baton's Windows tray icon. Keeps the daemon running and gives one-click access to the
 # app, phone pairing and settings. Started by `baton tray` or the `baton autostart` logon task.
+# -Watchdog: started by the 10-minute "Baton Watchdog" task. It exits at once when a tray is already
+# running (single-instance lock) or when you stopped Baton yourself (state\stopped-by-user.json).
+param([switch]$Watchdog)
 $ErrorActionPreference = 'SilentlyContinue'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -10,6 +13,15 @@ $Data = if ($env:BATON_HOME) { $env:BATON_HOME } else { Join-Path $env:USERPROFI
 # One tray per user.
 $mutex = New-Object System.Threading.Mutex($false, 'Local\BatonTray')
 if (-not $mutex.WaitOne(0)) { exit 0 }
+
+# "You stopped Baton" marker, shared with `baton stop` / `baton start` (lib/launch.js).
+$State = if ($env:BATON_STATE_DIR) { $env:BATON_STATE_DIR } else { Join-Path $Data 'state' }
+$StopMarker = Join-Path $State 'stopped-by-user.json'
+function StoppedByUser { return (Test-Path $StopMarker) }
+function MarkStopped { try { New-Item -ItemType Directory -Force $State | Out-Null; ('{"by":"tray","at":"' + (Get-Date).ToString('o') + '"}') | Set-Content -Path $StopMarker -Encoding ascii } catch {} }
+function ClearStopped { Remove-Item -Path $StopMarker -Force -ErrorAction SilentlyContinue }
+if ($Watchdog -and (StoppedByUser)) { exit 0 }
+if (-not $Watchdog) { ClearStopped }   # an explicit start (sign-in, `baton tray`) means you want it running
 
 function Settings {
   $s = @{ port = 8788; appPort = 8790 }
@@ -24,21 +36,31 @@ function Token {
   try { return (Get-Content (Join-Path $Data 'mobile\secret.json') -Raw | ConvertFrom-Json).token } catch { return '' }
 }
 function Node {
+  if ($env:BATON_NODE -and (Test-Path $env:BATON_NODE)) { return $env:BATON_NODE }
+  foreach ($c in @((Join-Path $Root 'node.exe'), (Join-Path $Root 'node\node.exe'), (Join-Path $Root 'runtime\node.exe'))) { if (Test-Path $c) { return $c } }
   $n = (Get-Command node -ErrorAction SilentlyContinue).Source
   if (-not $n) { $n = Join-Path $env:ProgramFiles 'nodejs\node.exe' }
   return $n
 }
-function Healthy {
+function Health {
   $s = Settings
-  try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 "http://127.0.0.1:$($s.port)/api/health"; return $r.StatusCode -eq 200 } catch { return $false }
+  try {
+    $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 "http://127.0.0.1:$($s.port)/api/health"
+    if ($r.StatusCode -eq 200) { $j = $r.Content | ConvertFrom-Json; if ($j.app -eq 'baton') { return $j } }
+  } catch {}
+  return $null
 }
+function Healthy { return [bool](Health) }
 function StartDaemon {
   if (Healthy) { return }
-  $log = Join-Path $Data 'state\daemon-stdio.log'
-  New-Item -ItemType Directory -Force (Split-Path $log) | Out-Null
+  if (StoppedByUser) { return }
+  # Through run-daemon.cmd, like every other start path: it rotates state\daemon-stdio.log at 10 MB,
+  # writes a launch and an exit line, and keeps node's stderr - the only record of a hard crash.
+  New-Item -ItemType Directory -Force $State | Out-Null
   $p = New-Object System.Diagnostics.ProcessStartInfo
-  $p.FileName = Node
-  $p.Arguments = '"' + (Join-Path $Root 'server.js') + '"'
+  $p.FileName = Join-Path $env:SystemRoot 'System32\cmd.exe'
+  $p.Arguments = '/d /c "' + (Join-Path $PSScriptRoot 'run-daemon.cmd') + '"'
+  $p.EnvironmentVariables['BATON_NODE'] = (Node)
   $p.WorkingDirectory = $env:USERPROFILE
   $p.UseShellExecute = $false
   $p.CreateNoWindow = $true
@@ -67,21 +89,34 @@ $status = $menu.Items.Add('Starting...'); $status.Enabled = $false
 $menu.Items.Add('Open Baton', $null, { OpenApp '' }) | Out-Null
 $menu.Items.Add('Pair a phone (QR code)', $null, { OpenApp '#pair' }) | Out-Null
 $menu.Items.Add('Settings', $null, { OpenApp '#settings' }) | Out-Null
+$fix = $menu.Items.Add('Connect Claude Desktop...', $null, { OpenApp '#desktop' }); $fix.Visible = $false
 [void]$menu.Items.Add('-')
-$menu.Items.Add('Restart Baton', $null, { StopDaemon; Start-Sleep -Seconds 3; StartDaemon }) | Out-Null
+$menu.Items.Add('Restart Baton', $null, { ClearStopped; StopDaemon; Start-Sleep -Seconds 3; StartDaemon }) | Out-Null
 $menu.Items.Add('Quit (stop Baton)', $null, {
-  StopDaemon; $icon.Visible = $false; $icon.Dispose(); [System.Windows.Forms.Application]::Exit()
+  MarkStopped; StopDaemon; $icon.Visible = $false; $icon.Dispose(); [System.Windows.Forms.Application]::Exit()
 }) | Out-Null
 $icon.ContextMenuStrip = $menu
 $icon.add_MouseDoubleClick({ OpenApp '' })
+$icon.add_BalloonTipClicked({ OpenApp '#desktop' })
+$script:warned = $false
 
 StartDaemon
 
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 20000
 $timer.add_Tick({
-  if (Healthy) { $status.Text = 'Baton is running'; $icon.Text = 'Baton - running' }
-  else { $status.Text = 'Baton stopped - restarting'; $icon.Text = 'Baton - restarting'; StartDaemon }
+  $h = Health
+  if (-not $h -and (StoppedByUser)) { $status.Text = 'Baton is stopped (Restart Baton to start it)'; $icon.Text = 'Baton - stopped'; $fix.Visible = $false; return }
+  if (-not $h) { $status.Text = 'Baton stopped - restarting'; $icon.Text = 'Baton - restarting'; $fix.Visible = $false; StartDaemon; return }
+  if ($h.cdp -eq $false) {
+    $status.Text = 'Claude Desktop not connected'; $icon.Text = 'Baton - Claude Desktop not connected'; $fix.Visible = $true
+    if (-not $script:warned) {
+      $icon.ShowBalloonTip(10000, 'Baton', "Claude Desktop's debugger is off, so Baton can read sessions but not send or resume. Click to set it up.", [System.Windows.Forms.ToolTipIcon]::Warning)
+      $script:warned = $true
+    }
+  } else {
+    $status.Text = 'Baton is running'; $icon.Text = 'Baton - running'; $fix.Visible = $false; $script:warned = $false
+  }
 })
 $timer.Start()
 $status.Text = 'Baton is running'

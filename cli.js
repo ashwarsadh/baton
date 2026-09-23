@@ -62,8 +62,16 @@ const colorStatus = s => s === 'done' ? C.g(s) : s === 'failed' ? C.r(s) : s ===
       console.log(JSON.stringify(t, null, 2));
       break;
     }
-    case 'stop':      console.log(JSON.stringify(await api('POST', `/api/task/${args[1]}/stop?by=cli`), null, 2)); break;
-    case 'escalate':  console.log(JSON.stringify(await api('POST', `/api/task/${args[1]}/escalate`), null, 2)); break;
+    case 'stop': {
+      // One task only. Stopping the whole daemon is `baton stop` with no id (bin/baton.js).
+      if (!args[1]) return console.error('usage: baton stop <task-id>   (a bare `baton stop` stops the daemon)');
+      const r = await api('POST', `/api/task/${encodeURIComponent(args[1])}/stop?by=cli`);
+      if (r && r.ok && !r.task) return console.error('no such task: ' + args[1]);
+      console.log(JSON.stringify(r, null, 2)); break;
+    }
+    case 'escalate':
+      if (!args[1]) return console.error('usage: baton escalate <task-id>');
+      console.log(JSON.stringify(await api('POST', `/api/task/${encodeURIComponent(args[1])}/escalate`), null, 2)); break;
     case 'prune':     console.log(await api('POST', `/api/prune?days=${args[1] || 14}`)); break;
     case 'health':    console.log(JSON.stringify(await api('GET', '/api/health'), null, 2)); break;
     case 'resume': {
@@ -120,13 +128,13 @@ const colorStatus = s => s === 'done' ? C.g(s) : s === 'failed' ? C.r(s) : s ===
   baton preview <task>    show the routing decision without spending anything
   baton ls                list tasks (works even if the daemon is down)
   baton show <id>         full task record
-  baton stop <id>         kill a running worker
+  baton stop <id>         kill ONE running worker (a bare "baton stop" stops the daemon)
   baton escalate <id>     force a task up one rung
   baton sessions          Desktop sessions by group, with dots (passive read)
   baton archivable        sessions eligible for archiving
   baton health            daemon health
   baton prune [days]      drop old finished tasks
 
-dashboard: http://127.0.0.1:${PORT}`);
+dashboard (this computer only): http://127.0.0.1:${PORT}/`);
   }
 })().catch(e => { console.error('error:', e.message); process.exit(1); });

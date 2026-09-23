@@ -1,13 +1,15 @@
 {
   "name": "baton-cc",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Your Claude Code sessions, in your pocket: a phone + desktop client for Claude Desktop's Code tab with multi-session control, auto-resume and a master/worker orchestrator.",
   "license": "MIT",
   "bin": { "baton": "bin/baton.js" },
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/smoke.js"
+    "build:win": "powershell -NoProfile -ExecutionPolicy Bypass -File installer/windows/build.ps1",
+    "build:mac": "bash installer/macos/build-dmg.sh",
+    "test": "node test/smoke.js && node test/accounts.js && node test/accounts-guards.js && node test/accounts-recovery.js && node test/accounts-threeway.js && node test/accounts-groups.js && node test/accounts-ops.js && node test/organizer.js && node test/goals.js && node test/inbox.js && node test/index.js && node test/summaries.js && node test/protocol.js && node test/hooks.js && node test/mobile.js && node test/core.js && node test/mcp.js && node test/directions.js && node test/hygiene.js"
   },
   "engines": { "node": ">=18" },
   "os": ["win32", "darwin", "linux"],
@@ -15,5 +17,8 @@
   "dependencies": {
     "qrcode": "^1.5.4",
     "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "classic-level": "^3.0.0"
   }
 }

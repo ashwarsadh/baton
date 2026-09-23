@@ -12,3 +12,5 @@ secret.json
 push.json
 subusers.json
 settings.json
+# installer builds (npm run build:win / build:mac)
+dist/

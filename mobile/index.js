@@ -12,6 +12,7 @@ const routines = require('./routines');
 const registry = require('../lib/registry');
 const orch = require('../lib/orchestrator');
 const push = require('./push');
+const alerts = require('./alerts');
 const access = require('./access');
 const { newSession } = require('./newsession');
 const { answerQuestion } = require('./answer');
@@ -334,16 +335,14 @@ async function notifyAttention(all) {
       url: '/?s=' + encodeURIComponent(s.id),
     };
     log(`notify: ${st} "${String(s.title || s.id).slice(0, 48)}"` +
-        (push.count() ? ` -> web push (${push.count()})` : ' (no phone subscribed to push)'));
+        ` -> ${alerts.route()}`);
 
     for (const c of clients) {
       if (isSubuser(c.identity) && !c.identity.sessions.has(s.id)) continue;
       sseSend(c, 'alert', evt);
     }
 
-    if (push.count()) {
-      try { await push.send(evt); } catch (e) { log('push failed: ' + e.message); }
-    }
+    await alerts.deliver(evt, log);
   }
   for (const s of all) wasRunning.set(s.id, !!s.running);
 }
@@ -353,24 +352,31 @@ async function noticeAccountSwitch() {
   try {
     const change = accountScope.note(accountScope.activeScope());
     if (!change || !change.changed) return;
-    const q = accountScope.raise(change);
-    if (!q || q.answer) return;
-    const to = q.toAccount || String(q.to).split('/')[0].slice(0, 8);
-    const from = q.fromAccount || String(q.from).split('/')[0].slice(0, 8);
-    log(`account switch: ${from} -> ${to}; asked, nothing acted`);
+    // The text comes from the settings that govern account sync, and with the Accounts module off
+    // no question is raised at all: nothing could act on "carry the chats over".
+    const label = (sc) => { const [a, o] = String(sc).split('/'); return accountScope.labelFor(a, o) || a.slice(0, 8); };
+    const words = alerts.accountSwitchText(config.get(), { to: label(change.to), from: label(change.from) });
+    let q = null;
+    if (words.ask) {
+      q = accountScope.raise(change);
+      if (!q || q.answer) return;
+    }
+    const to = q ? (q.toAccount || String(q.to).split('/')[0].slice(0, 8)) : label(change.to);
+    const from = q ? (q.fromAccount || String(q.from).split('/')[0].slice(0, 8)) : label(change.from);
+    log(`account switch: ${from} -> ${to}; ${q ? 'asked, nothing acted' : 'Accounts module off: told, not asked'}`);
     const evt = {
       id: 'account-switch',
-      kind: 'question',
+      kind: q ? 'question' : 'info',
       title: 'You switched Claude account',
-      body: `Now on ${to} (was ${from}). Your sessions sync both ways already — tap to decide.`,
+      body: alerts.accountSwitchText(config.get(), { to, from }).body,
       tag: 'account-switch',
-      url: '/?switch=1',
+      url: q ? '/?switch=1' : '/',
     };
     for (const c of clients) { if (!isSubuser(c.identity)) sseSend(c, 'alert', evt); }
-    for (const c of clients) { if (!isSubuser(c.identity)) sseSend(c, 'accountswitch', q); }
+    if (q) for (const c of clients) { if (!isSubuser(c.identity)) sseSend(c, 'accountswitch', q); }
     const ncfg = config.get().notifications || {};
     if (ncfg.enabled === false) { log('account switch: alerts are off; card is in the app only'); return; }
-    if (push.count()) { try { await push.send(evt); } catch (e) { log('push failed: ' + e.message); } }
+    await alerts.deliver(evt, log);
   } catch (e) {
     log('account-switch check failed: ' + e.message);
   }
@@ -760,7 +766,8 @@ async function handle(req, res) {
 
   if ((p === '/api/board' || p.startsWith('/api/board/')) && !config.mod('board')) return json(res, 404, { ok: false, error: 'module disabled', module: 'board' });
   if (p.startsWith('/api/routines') && !config.mod('routines')) return json(res, 404, { ok: false, error: 'module disabled', module: 'routines' });
-  if ((p === '/api/accounts' || p === '/api/accounts/migrate') && !config.mod('accounts')) return json(res, 404, { ok: false, error: 'module disabled', module: 'accounts' });
+  if ((p === '/api/accounts' || p.startsWith('/api/accounts/')) && !config.mod('accounts')) return json(res, 404, { ok: false, error: 'module disabled', module: 'accounts' });
+  if ((p === '/api/accounts' || p.startsWith('/api/accounts/')) && !isOwner(identity)) return json(res, 403, { ok: false, error: 'OWNER_ONLY' });
 
   if (p === '/api/bootstrap') {
     noteClientBuild(res._agoClient, url.searchParams.get('build'));
@@ -781,7 +788,7 @@ async function handle(req, res) {
       vapid: push.publicKey(),
       models: modelsCached(),
       efforts: Object.keys(desktop.EFFORT_VALUES || { low: 1, medium: 1, high: 1, xhigh: 1 }),
-      startDefaults: startDefaultsCached(),
+      startDefaults: newSessionDefaults(),
       build: assetVersion(),
       buildAgeMs: assetVer.since ? Date.now() - assetVer.since : null,
     });
@@ -870,7 +877,7 @@ async function handle(req, res) {
       ok: true,
       pending: accountScope.pending(),
       active: accountScope.activeScope(),
-      note: 'Your sessions and routines are kept in sync both ways every 15 minutes, so switching account does not lose them. Sidebar groups are not converged yet.',
+      ...(() => { const w = alerts.accountSwitchText(config.get()); return { note: w.note, transferToast: w.transferToast, accountsModule: w.moduleOn }; })(),
     });
   }
 
@@ -912,6 +919,7 @@ async function handle(req, res) {
   if (p === '/api/board') {
     try {
       try { await sessions.refresh(); } catch {}
+      try { await require('../lib/board-build').maybeBuild(60000); } catch (e) { log('board build failed: ' + e.message); }
       const r = await board.view();
       if (r.body && r.body.ok) r.body.bundle = assetVersion();
       return json(res, r.code, r.body);
@@ -923,6 +931,51 @@ async function handle(req, res) {
     if (!body || !body.id) return json(res, 400, { ok: false, error: 'id required' });
     try { return json(res, 200, { ok: true, id: body.id, wasHidden: board.unhide(body.id) }); }
     catch (e) { return json(res, 500, { ok: false, error: 'unhide-failed', detail: e.message }); }
+  }
+  if (p === '/api/board/act-batch' && req.method === 'POST') {
+    let body; try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { ok: false, error: 'bad json' }); }
+    try {
+      const r = await board.actBatch({ items: body && body.items, who: 'mobile' });
+      return json(res, r.code, r.body);
+    } catch (e) {
+      log('board batch failed: ' + e.message);
+      return json(res, 429, { ok: false, error: 'send-failed', reason: e.message });
+    }
+  }
+  if (p === '/api/goals') {
+    if (!config.mod('goalChaser') && !config.mod('cacheKeeper')) return json(res, 404, { ok: false, error: 'module disabled', module: 'goalChaser' });
+    if (!isOwner(identity)) return json(res, 403, { ok: false, error: 'OWNER_ONLY' });
+    const goals = require('../lib/goals');
+    if (req.method === 'POST') {
+      let body; try { body = JSON.parse((await readBody(req)).toString('utf8') || '{}'); } catch { return json(res, 400, { ok: false, error: 'bad json' }); }
+      const a = String(body.action || 'add');
+      let r;
+      if (a === 'add') r = goals.add({ title: body.title, text: body.text, project: body.project, due: body.due, checks: body.checks, source: 'app' });
+      else if (a === 'done' || a === 'failed' || a === 'dropped') r = goals.close(body.id, { status: a, note: body.note, by: 'app' });
+      else if (a === 'reopen') r = goals.reopen(body.id, body.note);
+      else if (a === 'judged') r = goals.judged(body.id, body.note);
+      else if (a === 'verify') r = goals.verify(body.id, body.verify_by || body.date, body.what || body.note);
+      else return json(res, 400, { ok: false, error: 'action must be add | done | failed | dropped | reopen | judged | verify' });
+      return json(res, r.ok ? 200 : 400, r);
+    }
+    try { await sessions.refresh(); } catch {}
+    const list = sessions.decorate(sessions.index().list, desktop.loadSnapshot());
+    let items = null;
+    try {
+      const h = JSON.parse(fs.readFileSync(goals.HEALTH, 'utf8'));
+      if (Date.now() - Date.parse(h.at) < 15 * 60000) items = h.items;
+    } catch {}
+    if (!items) {
+      const anyLive = list.some(s => s.live);
+      items = goals.assess({ goals: goals.list({ all: true }), sessions: new Map(list.map(s => [s.id, anyLive ? s : { ...s, live: undefined }])),
+        fresh: true, now: Date.now(), st: goals.settings() });
+    }
+    const cond = new Map(items.map(i => [i.id, i]));
+    const titles = new Map(list.map(s => [s.id, s.title]));
+    const all = goals.list({ all: true }).map(g => ({ ...g, condition: g.status === 'open' ? ((cond.get(g.id) || {}).condition || null) : null,
+      ownerState: (cond.get(g.id) || {}).ownerState || null,
+      ownerTitle: g.ownerSessionId ? (titles.get(g.ownerSessionId) || null) : null }));
+    return json(res, 200, { ok: true, goals: all, ...goals.status(), modules: { goalChaser: config.mod('goalChaser'), cacheKeeper: config.mod('cacheKeeper') } });
   }
   if (p === '/api/board/act' && req.method === 'POST') {
     let body; try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { ok: false, error: 'bad json' }); }
@@ -971,6 +1024,14 @@ async function handle(req, res) {
                      (out) => ({ id, cancel: out || null }));
   }
 
+  if (p === '/api/projects') {
+    if (!isOwner(identity)) return json(res, 403, { ok: false, error: 'OWNER_ONLY' });
+    const projects = require('../lib/projects');
+    try {
+      const ix = url.searchParams.get('refresh') === '1' ? await projects.build({ force: true }) : await projects.fresh(30 * 60000);
+      return json(res, 200, { ok: true, ...ix });
+    } catch (e) { return json(res, 500, { ok: false, error: 'INDEX_FAILED', message: e.message }); }
+  }
   if (p === '/api/settings') {
     if (req.method === 'POST') {
       let body; try { body = JSON.parse((await readBody(req)).toString('utf8') || '{}'); } catch { return json(res, 400, { ok: false, error: 'bad json' }); }
@@ -984,6 +1045,26 @@ async function handle(req, res) {
     const list = pair.links(TOKEN);
     for (const l of list) l.qr = await pair.qrSvg(l.url);
     return json(res, 200, { ok: true, links: list, tunnel: tunnel.status() });
+  }
+  if (p === '/api/desktop') {
+    const cdp = await require('../lib/heal').checkCdp();
+    return json(res, 200, { ok: true, platform: process.platform, cdp: !!cdp.healthy, cdpPort: config.get().cdpPort,
+      desktopData: fs.existsSync(path.join(config.APPDATA, 'Claude')), devMode: devModeOn(), canAutoEnable: process.platform === 'win32' });
+  }
+  if (p === '/api/desktop/dev-mode' && req.method === 'POST') {
+    const f = path.join(config.APPDATA, 'Claude', 'developer_settings.json');
+    if (!fs.existsSync(path.dirname(f))) return json(res, 200, { ok: false, message: 'Claude Desktop is not installed for this user.' });
+    if (devModeOn()) return json(res, 200, { ok: true, already: true });
+    let j = {}; try { j = JSON.parse(fs.readFileSync(f, 'utf8')) || {}; } catch {}
+    fs.writeFileSync(f, JSON.stringify({ ...j, allowDevTools: true }, null, 2));
+    return json(res, 200, { ok: true, message: 'Developer Mode is on. Quit Claude Desktop completely and open it again, then turn on the debugger.' });
+  }
+  if (p === '/api/desktop/enable-debugger' && req.method === 'POST') {
+    if (process.platform !== 'win32') return json(res, 200, { ok: false, error: 'MANUAL', message: 'Turning the debugger on automatically is Windows-only for now. Follow the steps shown.' });
+    if (!devModeOn()) return json(res, 200, { ok: false, error: 'DEV_MODE_OFF', message: 'Turn on Developer Mode first, then quit and reopen Claude Desktop.' });
+    const steps = [];
+    const on = await require('../lib/heal').repairCdp(steps);
+    return json(res, 200, { ok: on, steps });
   }
   if (p === '/api/tunnel') return json(res, 200, { ok: true, tunnel: tunnel.status() });
   if (p === '/api/tunnel/login' && req.method === 'POST') return json(res, 200, await tunnel.login());
@@ -1006,19 +1087,36 @@ async function handle(req, res) {
   }
 
   if (p === '/api/accounts') {
-    try { return json(res, 200, { ok: true, ...accounts.readAccounts() }); }
+    try { return json(res, 200, { ok: true, ...(await accounts.readAccounts()) }); }
     catch (e) { return json(res, 500, { ok: false, error: 'accounts-failed', detail: e.message }); }
   }
-  if (p === '/api/accounts/migrate' && req.method === 'POST') {
-    let body; try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { ok: false, error: 'bad json' }); }
-    if (!body || !body.from || !body.to) return json(res, 400, { ok: false, error: 'from and to required' });
+  if (p.startsWith('/api/accounts/') && req.method === 'POST') {
+    let body; try { body = JSON.parse((await readBody(req)) || '{}') || {}; } catch { return json(res, 400, { ok: false, error: 'bad json' }); }
     try {
-      const r = accounts.armMigration({ from: body.from, to: body.to });
-      return json(res, r.ok ? 200 : 400, r);
+      if (p === '/api/accounts/sync') {
+        const r = await accounts.syncNow(body);
+        if (r.applied) log(`accounts sync: ${r.applied.count} change(s) written`);
+        return json(res, r.ok ? 200 : 409, r);
+      }
+      if (p === '/api/accounts/settings') return json(res, 200, { ok: true, settings: accounts.saveSettings(body) });
+      if (p === '/api/accounts/label') { const r = accounts.setLabel(body); return json(res, r.ok ? 200 : 400, r); }
+      if (p === '/api/accounts/cycle') {
+        const snap = desktop.loadSnapshot();
+        const running = () => sessions.decorate(sessions.index().list, snap)
+          .filter(s => s.running || s.awaiting).map(s => ({ id: s.id, title: s.title, running: !!s.running, awaiting: !!s.awaiting }));
+        const r = await accounts.closeSyncReopen(body, running);
+        const age = snap && snap.at ? Math.round((Date.now() - Date.parse(snap.at)) / 1000) : null;
+        if (r.needsConfirm && (age === null || age > 120)) r.snapshotWarning = 'The list of running sessions may be out of date. Check Claude Desktop before you confirm.';
+        if (r.log) log('accounts cycle: ' + r.log.join(' | '));
+        return json(res, 200, r);
+      }
+      const adv = await accounts.handle(p, body);   // Advanced: hold, freeze, undo, group restore, forget, launch hook
+      if (adv) { log('accounts ' + p.slice(14) + ': ' + (adv.body && adv.body.ok !== false ? 'done' : (adv.body && (adv.body.error || adv.body.message)))); return json(res, adv.status, adv.body); }
     } catch (e) {
-      log('account migrate failed: ' + e.message);
-      return json(res, 500, { ok: false, error: 'migrate-failed', detail: e.message });
+      log('accounts failed: ' + e.message);
+      return json(res, 500, { ok: false, error: 'accounts-failed', detail: e.message });
     }
+    return json(res, 404, { ok: false, error: 'unknown accounts action' });
   }
 
   if (p === '/api/usage') {
@@ -1046,9 +1144,9 @@ async function handle(req, res) {
       const patch = {};
       for (const k of ['enabled', 'awaiting', 'done']) if (k in body) patch[k] = !!body[k];
       const next = config.set({ notifications: patch }).notifications;
-      return json(res, 200, { ok: true, push: push.count(), notifications: next });
+      return json(res, 200, { ok: true, push: push.count(), notifications: next, route: alerts.route(), contact: push.subjectStatus() });
     }
-    return json(res, 200, { ok: true, push: push.count(), notifications: config.get().notifications });
+    return json(res, 200, { ok: true, push: push.count(), notifications: config.get().notifications, route: alerts.route(), contact: push.subjectStatus() });
   }
 
   if (p === '/api/suggestion') {
@@ -1406,7 +1504,11 @@ async function handle(req, res) {
         return json(res, 400, { ok: false, error: 'BAD_CWD',
           message: `The folder path arrived with no \\ or / in it ("${cwd.slice(0, 60)}"), so it is not a real path — something stripped the separators before it got here. Send the full path, e.g. C:\\Users\\you\\projects\\my-app.` });
       }
-      return uiJob(res, 'new', () => newSession(body),
+      const ns = config.get().newSession || {};
+      const extra = String(ns.instructions || '').trim();
+      const job = { ...body, model: body.model || ns.model || undefined, effort: body.effort || ns.effort || undefined,
+                    prompt: extra && body.prompt ? body.prompt + '\n\n' + extra : body.prompt };
+      return uiJob(res, 'new', () => newSession(job),
                    (out) => ({ sessionId: out && out.sessionId }));
     }
     if (p === '/api/permission/answer') {
@@ -1436,6 +1538,10 @@ async function handle(req, res) {
     }
     if (p === '/api/push/subscribe') { push.subscribe(body); return json(res, 200, { ok: true }); }
     if (p === '/api/push/test') { await push.send({ title: 'Baton', body: 'Test notification' }); return json(res, 200, { ok: true }); }
+    if (p === '/api/notify/test-backup') {
+      const r = await alerts.sendBackup({ kind: 'test', title: 'Baton', body: 'Test alert from Baton — the backup channel works.', tag: 'baton-test', url: '/' }, { test: true });
+      return json(res, 200, { ok: !!r.ok, result: r });
+    }
   } catch (e) {
     return json(res, 500, { ok: false, error: e.message });
   }
@@ -1482,13 +1588,30 @@ function bind(address, label) {
   bound.set(address, s);
 }
 
+/** Addresses the app may listen on for a remote-access mode. Only 'lan' and 'tailscale' go beyond loopback. */
+function wantedAddrs(mode, tsList) {
+  const want = new Set(['127.0.0.1']);
+  if (mode === 'lan') want.add('0.0.0.0');
+  if (mode === 'tailscale') for (const ts of tsList || []) want.add(ts.address);
+  return want;
+}
+
 function rebindLoop() {
   let announced = null;
   const tick = () => {
     const mode = (config.get().remote || {}).mode;
+    // Listen beyond loopback ONLY in the mode that asks for it ("off" and the Cloudflare modes are loopback-only;
+    // the tunnel connects to 127.0.0.1). Leaving a mode closes its listeners.
+    const want = wantedAddrs(mode, tailscaleAddrs());
+    for (const [addr, srv] of bound) {
+      if (want.has(addr)) continue;
+      bound.delete(addr);
+      try { srv.close(); } catch {}
+      log(`stopped listening on ${addr}:${PORT} (remote mode is ${mode || 'off'})`);
+    }
     if (mode === 'lan' && !bound.has('0.0.0.0')) bind('0.0.0.0', 'LAN');
     for (const ts of tailscaleAddrs()) {
-      if (mode === 'lan') break;
+      if (mode !== 'tailscale') break;
       if (!bound.has(ts.address)) bind(ts.address, 'Tailscale');
       if (announced !== ts.address) {
         announced = ts.address;
@@ -1522,6 +1645,15 @@ function transcriptTail(id, span = TAIL_BYTES) {
 
 let startDefaults = null;
 function startDefaultsCached() { return startDefaults; }
+function devModeOn() {
+  try { return JSON.parse(fs.readFileSync(path.join(config.APPDATA, 'Claude', 'developer_settings.json'), 'utf8')).allowDevTools === true; } catch { return false; }
+}
+function newSessionDefaults() {
+  const n = config.get().newSession || {};
+  if (!n.model && !n.effort) return startDefaults;
+  const d = startDefaults || {};
+  return { ...d, model: n.model || d.model, effort: n.effort || d.effort, effortSource: n.effort ? 'settings' : d.effortSource };
+}
 async function refreshStartDefaults() {
   try { const v = await desktop.readStartDefaults(); if (v && v.ok) startDefaults = { model: v.model, effort: v.effort, effortSource: v.effortSource }; } catch {}
 }
@@ -1567,4 +1699,4 @@ function start() {
   return { servers: [...bound.values()], token: TOKEN, port: PORT, tailscale: ts ? ts.address : null };
 }
 
-module.exports = Object.assign(start, { start, TOKEN, PORT, tailscaleAddrs, outbox, outboxTick, transcriptTail, TAIL_BYTES, buildReport: clientBuildReport });
+module.exports = Object.assign(start, { start, TOKEN, PORT, tailscaleAddrs, wantedAddrs, outbox, outboxTick, transcriptTail, TAIL_BYTES, buildReport: clientBuildReport });

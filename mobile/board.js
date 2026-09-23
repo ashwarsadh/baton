@@ -18,6 +18,7 @@ const AUDIT = path.join(CONDUCTOR_DIR, 'board-actions.jsonl');
 const ACTED = path.join(require('../lib/config').STATE, 'board-acted.json');
 const ACTED_TTL_MS = 12 * 3600 * 1000;
 
+const Filter = require('./public/board-ui.js');
 const log = (m) => { try { orch.log('[board] ' + m); } catch { console.log('[board] ' + m); } };
 
 function readBoard() {
@@ -71,18 +72,14 @@ function registryRow(sessionId) {
 
 const INBOX_JSONL = path.join(CONDUCTOR_DIR, 'inbox.jsonl');
 let noteCache = { mtime: 0, size: -1, map: new Map() };
+/** n -> the item's CURRENT note, from the folded ledger (a later row that carries no note keeps the earlier one). */
 function liveNotes() {
   let st;
   try { st = fs.statSync(INBOX_JSONL); } catch { return noteCache.map; }
   if (st.mtimeMs === noteCache.mtime && st.size === noteCache.size) return noteCache.map;
   const map = new Map();
   try {
-    for (const line of fs.readFileSync(INBOX_JSONL, 'utf8').split(String.fromCharCode(10))) {
-      if (!line) continue;
-      let r; try { r = JSON.parse(line); } catch { continue; }
-      if (!r || r.n === undefined) continue;
-      map.set(String(r.n), typeof r.note === 'string' ? r.note : '');
-    }
+    for (const [n, it] of require('../lib/inbox').fold().items) map.set(String(n), typeof it.note === 'string' ? it.note : '');
   } catch { return noteCache.map; }
   noteCache = { mtime: st.mtimeMs, size: st.size, map };
   return map;
@@ -126,28 +123,31 @@ function composeLine(cmd, id, title, extra) {
 
 const inboxTitle = (r) => '#' + r.n + ' ' + String(r.text || '').slice(0, 300);
 
-const KINDS = new Set(['yes', 'skip', 'answer', 'done']);
+const KINDS = new Set(['yes', 'skip', 'answer', 'done', 'reopen']);
 
 function lineFor(board, kind, id, text) {
-  if (!KINDS.has(kind)) return { ok: false, error: 'bad-kind', detail: 'kind must be yes | skip | answer | done' };
+  if (!KINDS.has(kind)) return { ok: false, error: 'bad-kind', detail: 'kind must be yes | skip | answer | done | reopen' };
   const raw = String(id == null ? '' : id).trim();
   if (!raw) return { ok: false, error: 'no-id' };
 
   const n = raw.startsWith('#') ? raw.slice(1) : raw;
-  const item = /^\d+$/.test(n) && (board.inbox || []).find(r => String(r.n) === n);
+  // An inbox item may be open, in flight (waiting) or probably handled (resolved?) — all three are tappable.
+  const item = /^\d+$/.test(n) && [].concat(board.inbox || [], board.inbox_resolved || [], board.inbox_waiting || [])
+    .find(r => String(r.n) === n);
   if (item) {
     if (kind === 'yes' || kind === 'skip') {
-      return { ok: false, error: 'bad-kind', detail: 'inbox items take Done or Answer, not ' + kind };
+      return { ok: false, error: 'bad-kind', detail: 'inbox items take Done, Answer or Reinstate, not ' + kind };
     }
     const title = inboxTitle(item);
     if (kind === 'done') return { ok: true, line: composeLine('done', '#' + item.n, title), target: 'inbox', title };
+    if (kind === 'reopen') return { ok: true, line: composeLine('reopen', '#' + item.n, title), target: 'inbox', title };
     if (!String(text || '').trim()) return { ok: false, error: 'no-text', detail: 'answer needs text' };
     return { ok: true, line: composeLine('answer', '#' + item.n, title, text), target: 'inbox', title };
   }
 
   const row = (board.rows || []).find(r => r.id === raw);
   if (!row) return { ok: false, error: 'unknown-id', detail: raw + ' is not on the current board' };
-  if (kind === 'done') return { ok: false, error: 'bad-kind', detail: 'Done is for inbox items; a session takes yes / skip / answer' };
+  if (kind === 'done' || kind === 'reopen') return { ok: false, error: 'bad-kind', detail: 'Done and Reinstate are for inbox items; a session takes yes / skip / answer' };
   if (kind === 'answer' && !String(text || '').trim()) return { ok: false, error: 'no-text', detail: 'answer needs text' };
   return {
     ok: true,
@@ -220,7 +220,7 @@ async function act({ kind, id, text, who }) {
   const message = '[board] ' + l.line;
   let out;
   try {
-    out = await withTimeout(bridge.sendMessage(st.id, message, {
+    out = await withTimeout(SEND(st.id, message, {
       origin: { kind: 'peer', sessionId: 'baton-mobile-board' },
       initiator: 'baton-mobile-board',
     }), SEND_TIMEOUT_MS, 'the bridge did not answer in ' + (SEND_TIMEOUT_MS / 1000) + 's');
@@ -236,12 +236,67 @@ async function act({ kind, id, text, who }) {
   };
   audit(rec);
   log(rec.result + ': ' + l.line);
-  if (out.ok) recordActed(id, kind);
+  if (out.ok) { recordActed(id, kind); closeBatonNote(board, l, kind); }
 
   if (!out.ok) {
     return { code: 429, body: { ok: false, error: 'send-failed', reason: rec.reason || 'the send did not complete', line: l.line, conductor: st.id } };
   }
   return { code: 200, body: { ok: true, line: l.line, message, delivered: !!out.delivered, queued: !!out.queued, conductor: st.id, at: rec.at } };
+}
+
+let SEND = (sid, msg, opts) => bridge.sendMessage(sid, msg, opts);
+let STATE_FN = (board, opts) => conductorState(board, opts);
+function _setSender(fn) { const p = SEND; SEND = fn || ((s, m, o) => bridge.sendMessage(s, m, o)); return p; }
+function _setConductorState(fn) { const p = STATE_FN; STATE_FN = fn || ((b, o) => conductorState(b, o)); return p; }
+
+/** On Baton's own board a delivered Done closes the inbox item and a Reinstate re-opens (and pins) it. */
+function closeBatonNote(board, l, kind) {
+  if ((kind !== 'done' && kind !== 'reopen') || l.target !== 'inbox' || board.generator !== 'baton') return;
+  const n = String(l.line).split(' ')[1];
+  try {
+    const inbox = require('../lib/inbox');
+    if (kind === 'done') inbox.done(n, 'by ' + inbox.ownerName() + ' from the board');
+    else inbox.reopen(n, 'from the board');
+  } catch (e) { log('inbox update failed: ' + e.message); }
+}
+
+/** Several queued taps delivered to the Conductor as ONE message, one line each. */
+async function actBatch({ items, who } = {}) {
+  const board = readBoard();
+  if (!board.ok) return { code: 503, body: { ok: false, error: board.error, detail: board.detail } };
+  const byId = new Map();
+  const rejected = [];
+  for (const it of (Array.isArray(items) ? items : []).slice(0, 50)) {
+    const l = lineFor(board, it && it.kind, it && it.id, it && it.text);
+    if (l.ok) byId.set(String(it.id), { ...l, id: String(it.id), kind: it.kind });
+    else rejected.push({ id: it && it.id, kind: it && it.kind, error: l.error, detail: l.detail || null });
+  }
+  const lines = [...byId.values()];
+  if (!lines.length) return { code: 400, body: { ok: false, error: 'nothing-to-send', rejected } };
+
+  const st = await STATE_FN(board, { fresh: true });
+  const batch = 'b' + Date.now().toString(36);
+  if (!st.ok) {
+    audit({ at: new Date().toISOString(), kind: 'batch', batch, lines: lines.map(l => l.line), who: who || 'mobile', result: 'refused', reason: st.reason });
+    return { code: 429, body: { ok: false, error: 'conductor-unavailable', reason: st.reason, conductor: st.id, rejected } };
+  }
+  const message = lines.length === 1 ? '[board] ' + lines[0].line
+    : `[board] ${lines.length} replies from the board, one per line:\n` + lines.map(l => l.line).join('\n');
+  let out;
+  try {
+    out = await withTimeout(SEND(st.id, message, {
+      origin: { kind: 'peer', sessionId: 'baton-mobile-board' }, initiator: 'baton-mobile-board',
+    }), SEND_TIMEOUT_MS, 'the bridge did not answer in ' + (SEND_TIMEOUT_MS / 1000) + 's');
+  } catch (e) { out = { ok: false, error: 'SEND_THREW', reason: e.message }; }
+  const at = new Date().toISOString();
+  const result = out.ok ? (out.delivered ? 'delivered' : 'queued') : 'failed';
+  for (const l of lines) {
+    audit({ at, kind: l.kind, id: l.id, target: l.target, line: l.line, batch, conductor: st.id, who: who || 'mobile', result, reason: out.reason || out.error || null });
+    if (out.ok) { recordActed(l.id, l.kind); closeBatonNote(board, l, l.kind); }
+  }
+  log(`${result}: batch of ${lines.length}`);
+  if (!out.ok) return { code: 429, body: { ok: false, error: 'send-failed', reason: out.reason || out.error || 'the send did not complete', rejected } };
+  return { code: 200, body: { ok: true, sent: lines.length, rejected, message, delivered: !!out.delivered, queued: !!out.queued, conductor: st.id, at } };
 }
 
 async function view() {
@@ -277,27 +332,35 @@ async function view() {
     return mark(Object.assign({}, r, { openable, note }), '#' + r.n);
   });
 
+  // The SAME predicate the app's chips use (mobile/public/board-ui.js Filter), with no age cut-off:
+  // a lane waiting two weeks needs you more than one waiting two days, so it must still be counted.
   const counts = {};
-  for (const b of ['buried', 'decide', 'nudge', 'un', 'open']) {
-    counts[b] = rows.filter(r => r.bucket === b && !r.handled && !r.acted && (r.age == null || r.age <= 7)).length;
-  }
+  for (const b of ['buried', 'decide', 'nudge', 'un', 'open']) counts[b] = rows.filter(r => Filter.matches(r, { bucket: b })).length;
+  counts.inbox = inbox.filter(r => Filter.matches(r, { bucket: 'inbox' })).length;
+  const openable = (sid) => { if (!sid) return false; try { return !!sessions.get(sid); } catch { return false; } };
+  const inboxSide = (list) => (list || []).map(r => mark(Object.assign({}, r, { openable: openable(r.session) }), '#' + r.n));
 
   return {
     code: 200,
     body: {
       ok: true, built_at: board.built_at, counts, builtCounts: board.counts, projects: board.projects,
       labels: board.labels, hints: board.hints, rows, inbox,
+      inbox_waiting: inboxSide(board.inbox_waiting), inbox_resolved: inboxSide(board.inbox_resolved),
+      owner_name: board.owner_name || 'you',
       goals: (board.goals || []).map(g => ({
         id: g.id, title: g.title, status: g.status || 'open', due: g.due || null,
         session: g.session || null, blocked_on: g.blocked_on || null,
         checks: Array.isArray(g.checks) ? g.checks : [],
         progress: g.progress || null, outcome: g.outcome || null,
         detail: String(g.detail || '').slice(0, 400),
+        project: g.project || '', condition: g.condition || null, closed_at: g.closed_at || null,
       })),
+      finished_older: board.finished_older || 0, finished_keep_days: board.finished_keep_days || 3,
+      goals_health: board.goals_health || null, hygiene: board.hygiene || null,
       conductor: { id: st.id, ok: st.ok, reason: st.reason, at: st.at || null },
       recent,
     },
   };
 }
 
-module.exports = { view, act, unhide, readActed, readBoard, liveNotes, conductorId, conductorState, composeLine, lineFor, BOARD_JSON, AUDIT };
+module.exports = { view, act, actBatch, _setSender, _setConductorState, unhide, readActed, readBoard, liveNotes, conductorId, conductorState, composeLine, lineFor, BOARD_JSON, AUDIT };

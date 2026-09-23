@@ -1,8 +1,40 @@
 (function () {
   'use strict';
 
+  // ONE predicate for showing a card AND counting its chip, so a chip never promises more (or less) than
+  // it shows. The server's header counts (mobile/board.js) require this same object. No age cut-off by
+  // default: a lane waiting two weeks needs you more than one waiting two days.
+  const FINISHED = ['done', 'closed', 'failed', 'dropped'];
+  const Filter = {
+    FINISHED,
+    isDone: (r) => !!(r && (r.acted || r.handled)),
+    isInbox: (r) => !!r && r.n != null && !r.bucket,
+    hay: (r) => (Filter.isInbox(r) ? ['#' + r.n, r.ask, r.text, r.note, r.project] : [r.title, r.group, r.project, r.ask, r.state])
+      .map(x => x == null ? '' : String(x)).join(' ').toLowerCase(),
+    /** f: { bucket: 'all' | 'inbox' | 'ask:decide|do|fyi|none' | a row bucket, days, project, q, showHandled } */
+    matches(r, f) {
+      f = f || {};
+      const bucket = f.bucket || 'all';
+      if (!r) return false;
+      if (Filter.isDone(r) !== !!f.showHandled) return false;
+      if (f.project && f.project !== 'all' && (r.project || '') !== f.project) return false;
+      if (f.q && !Filter.hay(r).includes(String(f.q).toLowerCase())) return false;
+      if (Filter.isInbox(r)) {
+        if (r.status !== 'open') return false;
+        if (bucket === 'all' || bucket === 'inbox') return true;
+        return bucket.startsWith('ask:') && (r.ask_kind || 'none') === bucket.slice(4);
+      }
+      if (bucket !== 'all' && r.bucket !== bucket) return false;
+      if (f.days != null && r.age != null && r.age > f.days) return false;
+      return true;
+    },
+    count: (list, f) => (list || []).filter(r => Filter.matches(r, f)).length,
+  };
+  if (typeof module === 'object' && module.exports) module.exports = Filter;
+  if (typeof document === 'undefined') return;
+
   const B = {
-    data: null, bucket: 'all', days: 7, q: '',
+    data: null, bucket: 'all', days: null, q: '', project: 'all',
     showHandled: false,
     busy: Object.create(null),
     posts: 0,
@@ -11,9 +43,79 @@
     answerFor: null,
     goalsOpen: false,
     goalsDoneOpen: false,
+    batch: false,
+    queue: [],
   };
 
-  const EXP_KEY = 'baton-board-expanded';
+  const QUEUE_KEY = 'baton_board_queue', BATCH_KEY = 'baton_board_batch';
+  function migrateKey(oldKey, newKey) {
+    try { const v = localStorage.getItem(oldKey); if (v != null && localStorage.getItem(newKey) == null) localStorage.setItem(newKey, v); localStorage.removeItem(oldKey); } catch {}
+  }
+  migrateKey('baton-board-queue', QUEUE_KEY); migrateKey('baton-board-batch', BATCH_KEY); migrateKey('baton-board-expanded', 'baton_board_expanded');
+  try { for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k && k.startsWith('baton-board-draft-')) migrateKey(k, 'baton_board_draft_' + k.slice(18)); } } catch {}
+  try { B.queue = JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]') || []; } catch {}
+  try { B.batch = localStorage.getItem(BATCH_KEY) === '1'; } catch {}
+  function saveQueue() {
+    try { localStorage.setItem(QUEUE_KEY, JSON.stringify(B.queue)); localStorage.setItem(BATCH_KEY, B.batch ? '1' : '0'); } catch {}
+  }
+  const queued = (id) => B.queue.find(q => q.id === id) || null;
+  function enqueue(kind, id, text, quiet) {
+    B.queue = B.queue.filter(q => q.id !== id).concat([{ kind, id, text: text || '' }]);
+    saveQueue();
+    if (quiet) return;
+    toast('Queued — ' + B.queue.length + ' repl' + (B.queue.length === 1 ? 'y' : 'ies') + ' waiting to send');
+    render();
+  }
+  /** Bulk: queue one line per visible card, switch batch on; nothing goes until "Send N replies". */
+  function enqueueAll(kind, ids) {
+    for (const id of ids) enqueue(kind, id, '', true);
+    B.batch = true;
+    saveQueue();
+    toast('Queued ' + ids.length + ' — tap "Send ' + B.queue.length + ' repl' + (B.queue.length === 1 ? 'y' : 'ies') + '" to send them as one message');
+    render();
+  }
+
+  function queueBar() {
+    let el = $('board-queue');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'board-queue';
+      el.className = 'board-queue';
+      $('board-list').parentNode.insertBefore(el, $('board-list'));
+      el.addEventListener('click', (e) => {
+        if (e.target.closest('#board-queue-send')) sendQueue();
+        if (e.target.closest('#board-queue-clear')) { B.queue = []; saveQueue(); render(); }
+      });
+    }
+    const n = B.queue.length;
+    el.hidden = !n && !B.batch;
+    el.innerHTML = n
+      ? '<span>' + n + ' repl' + (n === 1 ? 'y' : 'ies') + ' queued — they go to the Conductor as one message.</span>'
+        + '<button class="bbtn b-yes" id="board-queue-send">Send ' + n + ' repl' + (n === 1 ? 'y' : 'ies') + '</button>'
+        + '<button class="linkish" id="board-queue-clear">clear</button>'
+      : '<span>Batch mode: taps are queued here and sent together.</span>';
+  }
+
+  async function sendQueue() {
+    if (!B.queue.length || B.busy.__queue) return;
+    B.busy.__queue = Date.now();
+    const items = B.queue.slice();
+    try {
+      const r = await api('/api/board/act-batch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }),
+      });
+      const bad = new Set((r.rejected || []).map(x => String(x.id)));
+      B.queue = B.queue.filter(q => bad.has(String(q.id)));
+      saveQueue();
+      for (const q of items) if (q.kind === 'answer' && !bad.has(String(q.id))) saveDraft(q.id, '');
+      toast('Sent ' + r.sent + ' repl' + (r.sent === 1 ? 'y' : 'ies') + ' in one message' + (bad.size ? ' — ' + bad.size + ' no longer on the board' : ''));
+      await loadBoard();
+    } catch (e) {
+      toast('Not sent: ' + e.message + ' — your replies are still queued', true);
+    } finally { delete B.busy.__queue; }
+  }
+
+  const EXP_KEY = 'baton_board_expanded';
   try {
     for (const id of JSON.parse(localStorage.getItem(EXP_KEY) || '[]')) B.expanded[id] = true;
   } catch {}
@@ -99,9 +201,11 @@
       : '<b>Buttons will not send</b><span>' + esc(c.reason || 'The Conductor session is not available.') + '</span>';
   }
 
+  const filt = (over) => Object.assign({ bucket: B.bucket, days: B.days, project: B.project, q: B.q, showHandled: B.showHandled }, over || {});
+
   function chips() {
-    const d = B.data, counts = d.counts || {};
-    const nInbox = (d.inbox || []).filter(r => r.status === 'open' && !r.acted && !r.handled).length;
+    const d = B.data;
+    const nInbox = Filter.count(d.inbox, filt({ bucket: 'inbox', showHandled: false }));
     const mk = (wrap, label, n, key, on, cls) => {
       const b = document.createElement('button');
       b.className = 'chip' + (on ? ' on' : '') + (cls ? ' ' + cls : '');
@@ -112,8 +216,8 @@
     const bw = $('board-buckets');
     bw.innerHTML = '';
     mk(bw, 'All', null, 'all', B.bucket === 'all');
-    if (nInbox) mk(bw, 'For you', nInbox, 'inbox', B.bucket === 'inbox', 'b-inbox');
-    const nGoals = ((d.goals || []).filter(g => g.status !== 'done')).length;
+    if (nInbox) mk(bw, 'For ' + (d.owner_name || 'you'), nInbox, 'inbox', B.bucket === 'inbox', 'b-inbox');
+    const nGoals = ((d.goals || []).filter(g => !FINISHED.includes(g.status))).length;
     if ((d.goals || []).length) {
       const gb = document.createElement('button');
       gb.className = 'chip' + (B.bucket === 'goals' ? ' on' : '');
@@ -121,16 +225,17 @@
       gb.onclick = () => { B.bucket = 'goals'; B.goalsOpen = true; B.showHandled = false; render(); };
       bw.appendChild(gb);
     }
-    for (const k of ['decide', 'do', 'fyi']) {
-      const n = (d.inbox || []).filter(r =>
-        r.status === 'open' && !r.acted && !r.handled && r.ask_kind === k).length;
+    for (const k of ['decide', 'do', 'fyi', 'none']) {
+      const n = Filter.count(d.inbox, filt({ bucket: 'ask:' + k, showHandled: false }));
       if (!n) continue;
       mk(bw, KIND_LABEL[k], n, 'ask:' + k, B.bucket === 'ask:' + k, 'b-ask k-' + k);
     }
     for (const k of BUCKETS) {
-      if (!counts[k] && !(d.rows || []).some(r => r.bucket === k)) continue;
-      mk(bw, (d.labels && d.labels[k] ? d.labels[k].split('—')[0].trim() : k), counts[k] || 0, k, B.bucket === k, 'b-' + k);
+      const n = Filter.count(d.rows, filt({ bucket: k, showHandled: false }));
+      if (!n && !(d.rows || []).some(r => r.bucket === k)) continue;
+      mk(bw, (d.labels && d.labels[k] ? d.labels[k].split('—')[0].trim() : k), n, k, B.bucket === k, 'b-' + k);
     }
+    projectChips(d);
     const dw = $('board-days');
     dw.innerHTML = '';
     for (const n of [3, 7, 14, null]) {
@@ -140,8 +245,8 @@
       b.onclick = () => { B.days = n; B.showHandled = false; render(); };
       dw.appendChild(b);
     }
-    const nDone = (d.rows || []).filter(r => r.acted || r.handled).length
-      + (d.inbox || []).filter(r => r.status === 'open' && (r.acted || r.handled)).length;
+    const nDone = Filter.count(d.rows, filt({ bucket: 'all', showHandled: true }))
+      + Filter.count(d.inbox, filt({ bucket: 'all', showHandled: true }));
     if (nDone) {
       const b = document.createElement('button');
       b.className = 'chip b-handled' + (B.showHandled ? ' on' : '');
@@ -149,9 +254,36 @@
       b.onclick = () => { B.showHandled = !B.showHandled; render(); };
       dw.appendChild(b);
     }
+    const bt = document.createElement('button');
+    bt.className = 'chip' + (B.batch ? ' on' : '');
+    bt.title = 'Queue your taps and send them to the Conductor as one message';
+    bt.innerHTML = 'Batch' + (B.queue.length ? ' <span class="n">' + B.queue.length + '</span>' : '');
+    bt.onclick = () => { B.batch = !B.batch; saveQueue(); render(); };
+    dw.appendChild(bt);
   }
 
-  const matches = (hay) => !B.q || hay.toLowerCase().includes(B.q);
+  function projectChips(d) {
+    let pw = $('board-projects');
+    const list = (d.projects || []).filter(Boolean);
+    if (!pw) {
+      if (list.length < 2) return;
+      pw = document.createElement('div');
+      pw.id = 'board-projects';
+      pw.className = 'chips board-projects';
+      const days = $('board-days');
+      days.parentNode.insertBefore(pw, days.nextSibling);
+    }
+    pw.hidden = list.length < 2;
+    pw.innerHTML = '';
+    if (B.project !== 'all' && !list.includes(B.project)) B.project = 'all';
+    for (const p of ['all'].concat(list)) {
+      const b = document.createElement('button');
+      b.className = 'chip' + (B.project === p ? ' on' : '');
+      b.textContent = p === 'all' ? 'All projects' : p;
+      b.onclick = () => { B.project = p; render(); };
+      pw.appendChild(b);
+    }
+  }
 
   function cardTitle(card) {
     const t = card.querySelector('.bcard-t');
@@ -167,7 +299,7 @@
       .map(n => n.textContent).join('').trim();
   }
 
-  const KIND_LABEL = { decide: 'DECIDE', do: 'DO', fyi: 'FYI' };
+  const KIND_LABEL = { decide: 'DECIDE', do: 'DO', fyi: 'FYI', none: 'NO QUESTION' };
   const KIND_HINT = { decide: 'needs your answer', do: 'needs your hands', fyi: 'read and clear' };
 
   function inboxCard(r) {
@@ -180,10 +312,11 @@
       + ' data-expand="' + esc(k) + '">'
       + '<div class="btext">' + (r.ask_kind
           ? '<span class="b-kind k-' + esc(r.ask_kind) + '">' + esc(KIND_LABEL[r.ask_kind] || '?') + '</span> '
-          : '')
-        + '#' + r.n + ' ' + esc(String(r.ask || r.text || '')) + '</div>'
+          : '<span class="b-kind k-none" title="The session never said what it needs from you">NO QUESTION</span> ')
+        + (new RegExp('^#' + r.n + '\\b').test(String(r.ask || r.text || '')) ? '' : '#' + r.n + ' ') + esc(String(r.ask || r.text || '')) + '</div>'
       + '<span class="bgo"></span></div>'
-      + '<div class="bcard-m"><span class="b-tag">' + esc(KIND_HINT[r.ask_kind] || 'For you') + '</span><span>' + esc((r.ts || '').slice(5, 16)) + '</span>'
+      + '<div class="bcard-m"><span class="b-tag">' + esc(KIND_HINT[r.ask_kind] || 'For ' + ((B.data && B.data.owner_name) || 'you')) + '</span><span>' + esc((r.ts || '').slice(5, 16)) + '</span>'
+      + (r.project ? '<span>' + esc(r.project) + '</span>' : '') + (r.pinned ? '<span title="Reinstated by you; never auto-resolved">pinned</span>' : '')
       + (tap ? '<button class="bopen" data-open="' + esc(r.session) + '">Open session ›</button>' : '')
       + '</div></div>'
       + ((r.ask && r.text) ? '<div class="bcard-ask bnote' + (B.expanded[k] ? ' open' : '') + '" data-note="' + esc(k) + '">'
@@ -217,11 +350,17 @@
       + '</div>';
   }
 
-  const LABELS = { yes: 'Yes', skip: 'Skip', answer: 'Answer…', done: 'Done ✓' };
+  const LABELS = { yes: 'Yes', skip: 'Skip', answer: 'Answer…', done: 'Done ✓', reopen: 'Reinstate' };
 
-  const SENT = { yes: 'Yes sent', skip: 'Skip sent', answer: 'Answer sent', done: 'Done sent' };
+  const SENT = { yes: 'Yes sent', skip: 'Skip sent', answer: 'Answer sent', done: 'Done sent', reopen: 'Reinstated' };
 
   function actionsHtml(id, kinds, done, handled) {
+    const q = !handled && !done && queued(id);
+    if (q) {
+      return '<div class="bcard-done"><span class="bpill wait">Queued: ' + esc(LABELS[q.kind] || q.kind) + '</span>'
+        + (q.text ? '<span>' + esc(String(q.text).slice(0, 120)) + '</span>' : '')
+        + '<button class="linkish" data-unqueue="' + esc(id) + '">remove from batch</button></div>';
+    }
     if (handled) {
       return '<div class="bcard-done"><span class="bpill ok">Handled by the Conductor</span>'
         + '<span>' + esc(String(handled).slice(0, 80)) + '</span>'
@@ -242,8 +381,8 @@
     const now = Date.now();
     const dueMs = (g) => { const t = g.due ? Date.parse(g.due) : NaN; return isNaN(t) ? Infinity : t; };
     const overdue = (g) => dueMs(g) < now;
-    const open = goals.filter(g => g.status !== 'done');
-    const done = goals.filter(g => g.status === 'done');
+    const open = goals.filter(g => !FINISHED.includes(g.status) && (B.project === 'all' || (g.project || '') === B.project));
+    const done = goals.filter(g => FINISHED.includes(g.status) && (B.project === 'all' || (g.project || '') === B.project));
     open.sort((a, b) => (overdue(b) - overdue(a)) || (dueMs(a) - dueMs(b)));
 
     const days = (g) => {
@@ -260,7 +399,8 @@
         : '';
       return '<div class="gcard' + (overdue(g) ? ' gcard-over' : '') + '"' + tap + '>'
         + '<div class="gtitle">' + esc(g.title || g.id) + '</div>'
-        + '<div class="gmeta">' + days(g)
+        + '<div class="gmeta">' + (g.condition ? '<span class="gcond c-' + esc(g.condition) + '">' + esc(COND_LABEL[g.condition] || g.condition) + '</span> ' : '')
+        + (FINISHED.includes(g.status) ? '<span class="gcond">' + esc(g.status) + (g.closed_at ? ' ' + esc(fmtWhen(g.closed_at)) : '') + '</span> ' : days(g))
         + (g.blocked_on ? ' <em class="gblocked">blocked: ' + esc(String(g.blocked_on)) + '</em>' : '')
         + (g.session ? ' <span class="gsess">' + esc(String(g.session).slice(0, 14)) + '…</span>' : '')
         + '</div>'
@@ -276,10 +416,93 @@
       + open.map(card).join('')
       + (done.length
           ? '<details class="goals-done"' + (B.goalsDoneOpen ? ' open' : '') + ' id="goals-done">'
-            + '<summary>Finished <span class="n">' + done.length + '</span></summary>'
-            + done.map(card).join('') + '</details>'
+            + '<summary>Finished — last ' + esc(d.finished_keep_days || 3) + ' days <span class="n">' + done.length + '</span></summary>'
+            + done.map(card).join('')
+            + (d.finished_older ? '<p class="gmore">' + esc(d.finished_older) + ' finished earlier — <code>baton goal list --all</code></p>' : '')
+            + '</details>'
           : '')
       + '</details>';
+  }
+
+  const COND_LABEL = { 'VERIFY-NOW': 'verify now', DELIVERED: 'delivered — read it', ORPHAN: 'no owner', UNTOLD: 'owner never told',
+    UNRESPONSIVE: 'not answering', LATE: 'late', STUCK: 'stuck', 'BLOCKED-STALE': 'blocked a week', BLOCKED: 'blocked', OFFLINE: 'owner offline',
+    'HANDED-OVER': 'handed over', 'AWAITING-VERIFICATION': 'awaiting verification', WATCH: 'watch', FRESH: 'on track' };
+
+  /** Goal register health: what needs a person, from goals-health.json (written by the goal chaser). */
+  function healthBlock(d) {
+    const h = d.goals_health;
+    if (!h || !(h.items || []).length) return '';
+    const by = (c) => h.items.filter(i => i.condition === c && (B.project === 'all' || (i.project || '') === B.project));
+    const line = (cls, list, label) => '<div class="' + (list.length ? cls : 'ok') + '"><b>' + list.length + '</b> ' + esc(label)
+      + (list.length ? '<small>' + list.slice(0, 6).map(i => esc(i.id + ' ' + String(i.title || '').slice(0, 60))).join(' · ') + '</small>' : '') + '</div>';
+    const ev = h.events24 || [];
+    return '<div class="bhealth">'
+      + (by('VERIFY-NOW').length ? line('bad', by('VERIFY-NOW'), 'verify now — the proving date has arrived') : '')
+      + line('bad', by('DELIVERED'), 'delivered, not yet read — close with the evidence or judge it back')
+      + line('bad', by('ORPHAN').concat(by('UNTOLD')), 'ownerless or never handed over')
+      + line('warn', by('STUCK').concat(by('LATE')), 'stuck or late')
+      + '<div><b>' + ev.length + '</b> change' + (ev.length === 1 ? '' : 's') + ' in 24 h'
+      + (ev.length ? '<small>' + ev.slice(-5).map(e => esc((e.id || '') + ' ' + (e.kind || '') + (e.to ? ' → ' + e.to : ''))).join(' · ') + '</small>' : '') + '</div>'
+      + '</div>';
+  }
+
+  /** One card per project: its open goals and its open asks. */
+  function projectsBlock(d) {
+    const map = new Map();
+    const get = (p) => { if (!map.has(p)) map.set(p, { goals: [], asks: [] }); return map.get(p); };
+    for (const g of d.goals || []) if (!FINISHED.includes(g.status) && g.project) get(g.project).goals.push(g);
+    for (const r of d.inbox || []) if (r.status === 'open' && r.project) get(r.project).asks.push(r);
+    const list = [...map.entries()].filter(([p]) => B.project === 'all' || p === B.project).sort((a, b) => a[0].localeCompare(b[0]));
+    if (!list.length) return '';
+    return '<details class="goals" id="board-byproject"' + (B.projectsOpen ? ' open' : '') + '><summary><b>By project</b> <span class="n">' + list.length + '</span></summary>'
+      + list.map(([p, v]) => '<div class="gcard"><div class="gtitle">' + esc(p) + '</div><div class="gmeta">'
+        + v.goals.length + ' open goal' + (v.goals.length === 1 ? '' : 's') + ' · ' + v.asks.length + ' open ask' + (v.asks.length === 1 ? '' : 's') + '</div>'
+        + '<ul class="gchecks">' + v.goals.slice(0, 5).map(g => '<li>' + esc(g.id + ' ' + g.title) + (g.condition ? ' — ' + esc(COND_LABEL[g.condition] || g.condition) : '') + '</li>').join('')
+        + v.asks.slice(0, 5).map(r => '<li>#' + r.n + ' ' + esc(String(r.ask || r.text || '').slice(0, 120)) + '</li>').join('') + '</ul></div>').join('')
+      + '</details>';
+  }
+
+  /** Context hygiene (hygiene.json in the board folder, when something writes it). */
+  function hygieneBlock(d) {
+    const h = d.hygiene;
+    if (!h || typeof h !== 'object') return '';
+    const counts = h.counts && typeof h.counts === 'object' ? Object.entries(h.counts) : [];
+    const rows = Array.isArray(h.items) ? h.items : Array.isArray(h.sessions) ? h.sessions : [];
+    const wl = h.wakes && h.wakes.lastDay;
+    if (!counts.length && !rows.length && !wl) return '';
+    return '<details class="goals" id="board-hygiene"><summary><b>Context hygiene</b>'
+      + counts.map(([k, n]) => ' <span class="n">' + esc(n) + ' ' + esc(String(k).toLowerCase().replace(/[-_]/g, ' ')) + '</span>').join('')
+      + (h.at ? '<p>as at ' + esc(fmtWhen(h.at)) + '</p>' : '')
+      + (wl ? '<p>Wakes, last day: ' + esc(wl.warm || 0) + ' inside the cache window · ' + esc(wl.cold || 0) + ' outside'
+        + (h.wakes.baton24 != null ? ' · Baton sent ' + esc(h.wakes.baton24) + ' in 24 h' : '') + '</p>' : '') + '</summary>'
+      + rows.slice(0, 40).map(r => '<div class="gcard"><div class="gtitle">' + esc(r.title || r.id || r.sessionId || '') + '</div><div class="gmeta">'
+        + esc([r.verdict || r.state || '', r.reason || r.why || ''].filter(Boolean).join(' — ')) + '</div></div>').join('')
+      + (h.more ? '<p class="gmore">' + esc(h.more) + ' more — <code>baton hygiene</code></p>' : '')
+      + '</details>';
+  }
+
+  function inboxDrawers(d) {
+    const inProj = (r) => B.project === 'all' || (r.project || '') === B.project;
+    const res = (d.inbox_resolved || []).filter(inProj), wait = (d.inbox_waiting || []).filter(inProj);
+    let out = '';
+    if (res.length) {
+      out += '<details class="goals" id="board-resolved"' + (B.resolvedOpen ? ' open' : '') + '><summary><b>Probably handled</b> <span class="n">' + res.length + '</span>'
+        + '<p>Evidence says these were dealt with. They close on their own only when that evidence is strong. Reinstate any that are not.</p></summary>'
+        + res.map(r => '<div class="bcard inbox' + (r.acted ? ' acted' : '') + '" data-id="#' + r.n + '"><div class="bcard-head"><div class="bcard-t">#' + r.n + ' ' + esc(String(r.ask || r.text || '').slice(0, 300)) + '</div>'
+          + '<div class="bcard-m"><span class="b-tag">' + esc((r.tier || '?') + ' confidence') + '</span><span>' + esc(r.why || '') + '</span>'
+          + (r.openable && r.session ? '<button class="bopen" data-open="' + esc(r.session) + '">Open session ›</button>' : '') + '</div></div>'
+          + (r.evidence ? '<div class="bcard-ask"><b>Evidence</b>' + esc(r.evidence) + '</div>' : '')
+          + actionsHtml('#' + r.n, ['reopen'], r.acted, r.handled) + '</div>').join('')
+        + '</details>';
+    }
+    if (wait.length) {
+      out += '<details class="goals" id="board-waiting"' + (B.waitingOpen ? ' open' : '') + '><summary><b>In flight</b> <span class="n">' + wait.length + '</span>'
+        + '<p>Waiting on someone else — nothing for you to do yet.</p></summary>'
+        + wait.map(r => '<div class="gcard"' + (r.openable && r.session ? ' data-open="' + esc(r.session) + '" role="button" tabindex="0"' : '') + '><div class="gtitle">#' + r.n + ' '
+          + esc(String(r.ask || r.text || '').slice(0, 200)) + '</div><div class="gmeta">' + esc((r.ts || '').slice(5, 16)) + (r.project ? ' · ' + esc(r.project) : '') + '</div></div>').join('')
+        + '</details>';
+    }
+    return out;
   }
 
   function render() {
@@ -289,35 +512,33 @@
     staleBanner(d.bundle);
     conductorBanner();
     chips();
+    queueBar();
 
-    const isDone = (r) => !!(r.acted || r.handled);
-    const askKind = B.bucket.startsWith('ask:') ? B.bucket.slice(4) : null;
-    const showInbox = B.bucket === 'all' || B.bucket === 'inbox' || !!askKind;
-    const inbox = showInbox
-      ? (d.inbox || []).filter(r => r.status === 'open' && isDone(r) === B.showHandled
-          && (!askKind || r.ask_kind === askKind)
-          && matches('#' + r.n + ' ' + (r.ask || '') + ' ' + r.text + ' ' + (r.note || '')))
-      : [];
-    const rows = (B.bucket === 'inbox' || askKind) ? [] : (d.rows || []).filter(r =>
-      (B.bucket === 'all' || r.bucket === B.bucket)
-      && isDone(r) === B.showHandled && (r.age == null || B.days === null || r.age <= B.days)
-      && matches([r.title, r.group, r.project, r.ask, r.state].join(' ')));
+    const inbox = (d.inbox || []).filter(r => Filter.matches(r, filt()));
+    const rows = (d.rows || []).filter(r => Filter.matches(r, filt()));
 
     const html = [];
+    const top = B.bucket === 'all' || B.bucket === 'goals';
+    if (top && !B.showHandled) { const hb = healthBlock(d); if (hb) html.push(hb); }
     if (inbox.length) {
-      html.push('<div class="bsec"><h3>For you <span>' + inbox.length + '</span></h3>'
-        + '<p>Only you can do these — nothing else on this page needs you.</p></div>');
+      const fyi = inbox.filter(r => r.ask_kind === 'fyi' && !queued('#' + r.n));
+      html.push('<div class="bsec"><h3>For ' + esc(d.owner_name || 'you') + ' <span>' + inbox.length + '</span></h3>'
+        + '<p>Only you can do these — nothing else on this page needs you.</p>'
+        + (fyi.length && !B.showHandled ? '<button class="linkish" data-bulk="fyi">Clear all FYI (' + fyi.length + ')</button>' : '') + '</div>');
       html.push(inbox.map(inboxCard).join(''));
     }
+    if ((B.bucket === 'all' || B.bucket === 'inbox') && !B.showHandled) { const dr = inboxDrawers(d); if (dr) html.push(dr); }
     for (const k of BUCKETS) {
       const rs = rows.filter(r => r.bucket === k);
       if (!rs.length) continue;
       const lbl = (d.labels && d.labels[k]) || k;
+      const bulk = k === 'nudge' && !B.showHandled ? rs.filter(r => !queued(r.id)) : [];
       html.push('<div class="bsec"><h3>' + esc(lbl) + ' <span>' + rs.length + '</span></h3>'
-        + '<p>' + esc((d.hints && d.hints[k]) || '') + '</p></div>');
+        + '<p>' + esc((d.hints && d.hints[k]) || '') + '</p>'
+        + (bulk.length > 1 ? '<button class="linkish" data-bulk="nudge">Yes to all Nudge (' + bulk.length + ')</button>' : '') + '</div>');
       html.push(rs.map(sessionCard).join(''));
     }
-    const reg = ((B.bucket === 'all' || B.bucket === 'goals') && !B.showHandled) ? goalsSection(d) : '';
+    const reg = (top && !B.showHandled) ? goalsSection(d) + projectsBlock(d) + hygieneBlock(d) : '';
     $('board-list').innerHTML = (html.length ? html.join('')
       : reg ? ''
       : '<div class="empty">' + (B.showHandled ? 'Nothing handled in the last 12 hours.'
@@ -399,9 +620,21 @@
         .catch(err => toast('Could not put it back: ' + err.message, true));
       return;
     }
+    const bulk = e.target.closest('[data-bulk]');
+    if (bulk) {
+      const d = B.data || {};
+      const ids = bulk.dataset.bulk === 'fyi'
+        ? (d.inbox || []).filter(r => r.ask_kind === 'fyi' && Filter.matches(r, filt())).map(r => '#' + r.n)
+        : (d.rows || []).filter(r => r.bucket === 'nudge' && Filter.matches(r, filt({ bucket: 'nudge' }))).map(r => r.id);
+      if (ids.length) enqueueAll(bulk.dataset.bulk === 'fyi' ? 'done' : 'yes', ids.filter(id => !queued(id)));
+      return;
+    }
+    const unq = e.target.closest('[data-unqueue]');
+    if (unq) { B.queue = B.queue.filter(q => q.id !== unq.dataset.unqueue); saveQueue(); render(); return; }
     const b = e.target.closest('button[data-act]');
     if (!b) return;
     const id = b.dataset.target, kind = b.dataset.act;
+    if (B.batch && kind !== 'answer') { enqueue(kind, id); return; }
     if (kind !== 'answer') {
       const before = B.posts;
       setTimeout(() => {
@@ -471,7 +704,7 @@
     return true;
   }
 
-  const DRAFT_KEY = (id) => 'baton-board-draft-' + id;
+  const DRAFT_KEY = (id) => 'baton_board_draft_' + id;
 
   function saveDraft(id, text) {
     B.drafts[id] = text;
@@ -496,6 +729,7 @@
     askBox.hidden = !ask;
     const t = $('answer-text');
     t.value = loadDraft(id);
+    $('answer-send').textContent = B.batch ? 'Add to batch' : 'Send';
     $('answer-note').textContent = t.value ? 'Draft restored.' : '';
     showSheet($('answersheet'));
     growAnswer();
@@ -513,6 +747,13 @@
     const id = B.answerFor, text = $('answer-text').value;
     if (!id) return;
     if (!text.trim()) { $('answer-note').textContent = 'Nothing to send yet.'; $('answer-text').focus(); return; }
+    if (B.batch) {
+      saveDraft(id, text);
+      B.answerFor = null;
+      hideSheet($('answersheet'));
+      enqueue('answer', id, text);
+      return;
+    }
     $('answer-send').disabled = true;
     $('answer-note').textContent = 'Sending…';
     const before = B.posts;
@@ -556,6 +797,9 @@
     if (!t || t.tagName !== 'DETAILS') return;
     if (t.id === 'goals-reg') B.goalsOpen = t.open;
     if (t.id === 'goals-done') B.goalsDoneOpen = t.open;
+    if (t.id === 'board-resolved') B.resolvedOpen = t.open;
+    if (t.id === 'board-waiting') B.waitingOpen = t.open;
+    if (t.id === 'board-byproject') B.projectsOpen = t.open;
   }, true);
 
   $('board-q').oninput = (e) => { B.q = e.target.value.trim().toLowerCase(); render(); };

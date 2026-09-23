@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --omit=dev
+      # Headless: no Claude Desktop, and empty Claude data folders so nothing real is read.
+      - name: npm test
+        shell: bash
+        run: |
+          export APPDATA="$RUNNER_TEMP/appdata" CLAUDE_CONFIG_DIR="$RUNNER_TEMP/claude-config"
+          mkdir -p "$APPDATA" "$CLAUDE_CONFIG_DIR"
+          npm test

@@ -12,7 +12,7 @@ const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'baton-smoke-'));
 const PORT = 18000 + Math.floor(Math.random() * 1000), APP = PORT + 1000;
 fs.writeFileSync(path.join(HOME, 'settings.json'), JSON.stringify({
   cdpPort: 9, onboarded: true, autoEnableDebugger: false,
-  modules: { autoResume: false, orchestrator: false, chipAutostart: false, masterNotify: false },
+  modules: { autoResume: false, orchestrator: false, chipAutostart: false, masterNotify: false, organizer: false },
 }));
 const env = { ...process.env, BATON_HOME: HOME, BATON_PORT: String(PORT), BATON_APP_PORT: String(APP) };
 
@@ -64,6 +64,12 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
   check(boot.status === 200, 'bootstrap answers');
   const list = await req(APP, '/api/sessions', { headers: auth });
   check(list.status === 200 && Array.isArray(list.json.sessions), 'session list answers', 'sessions on this machine=' + (list.json ? list.json.total : '?'));
+  const proj = await req(APP, '/api/projects', { headers: auth });
+  check(proj.status === 200 && proj.json && proj.json.projects && proj.json.counts, 'project index answers', 'projects=' + (proj.json && proj.json.counts ? proj.json.counts.projects : '?'));
+
+  // Remote mode "off" (the default) means loopback only: no Tailscale / LAN listener and no such pairing link.
+  check(!/\((Tailscale|LAN)\)/.test(out), 'mode off listens on loopback only', (out.match(/listening on \S+/g) || []).join(' '));
+  check(!links.some(l => l.kind === 'tailscale' || l.kind === 'lan'), 'mode off offers no Tailscale/LAN pairing link', links.map(l => l.kind).join(','));
 
   await req(PORT, '/api/shutdown', { method: 'POST' });
   for (let i = 0; i < 40 && child.exitCode === null; i++) await wait(250);

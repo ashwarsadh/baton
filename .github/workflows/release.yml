@@ -1,0 +1,198 @@
+# Builds the downloadable installers, tests each one, and publishes a GitHub Release.
+#   push a tag vX.Y.Z (matching package.json "version")  -> build, self-test, publish the release
+#   Actions > Release > Run workflow                       -> build and self-test; publishes only if "publish" is ticked
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish a GitHub Release for the package.json version (otherwise only build and test)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Tag matches package.json
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ("v$v" -ne '${{ github.ref_name }}') { throw "tag ${{ github.ref_name }} does not match package.json version $v" }
+
+      - run: npm ci --omit=dev
+
+      - name: Smoke test (headless, no Claude Desktop)
+        shell: pwsh
+        run: |
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'appdata'
+          $env:CLAUDE_CONFIG_DIR = Join-Path $env:RUNNER_TEMP 'claude-config'
+          New-Item -ItemType Directory -Force $env:APPDATA, $env:CLAUDE_CONFIG_DIR | Out-Null
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Make sure Inno Setup 6 is available
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          (Get-Item $iscc).VersionInfo.ProductVersion
+
+      - name: Build installer and portable zip
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File installer/windows/build.ps1 -RequireInstaller
+
+      - name: Self-test the installer (silent install, CLI, daemon, silent uninstall)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $setup = Resolve-Path "dist/Baton-Setup-$v-x64.exe"
+          $dir = Join-Path $env:RUNNER_TEMP 'baton-install'
+          $log = Join-Path $env:RUNNER_TEMP 'baton-setup.log'
+          $env:BATON_HOME = Join-Path $env:RUNNER_TEMP 'baton-home'
+          $env:BATON_PORT = '18788'; $env:BATON_APP_PORT = '18790'
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'appdata'
+
+          $p = Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$dir`"", '/TASKS=""', "/LOG=`"$log`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content $log -Tail 60; throw "setup exited $($p.ExitCode)" }
+          foreach ($f in 'baton.cmd', 'runtime\node.exe', 'bin\baton.js', 'server.js', 'node_modules\ws\package.json', 'node_modules\qrcode\package.json', 'stop-baton.ps1', 'unins000.exe') {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "installed tree is missing $f" }
+          }
+
+          & "$dir\baton.cmd" help
+          if ($LASTEXITCODE -ne 0) { throw "baton help exited $LASTEXITCODE" }
+          $got = (& "$dir\baton.cmd" --version | Out-String).Trim()
+          if ($got -ne $v) { throw "baton --version said '$got', expected $v" }
+          & "$dir\baton.cmd" status
+          if ($LASTEXITCODE -ne 0) { throw "baton status exited $LASTEXITCODE" }
+
+          & "$dir\baton.cmd" start
+          $h = Invoke-RestMethod "http://127.0.0.1:$($env:BATON_PORT)/api/health" -TimeoutSec 10
+          if ($h.app -ne 'baton') { throw 'the installed daemon did not answer /api/health' }
+          & "$dir\baton.cmd" stop
+
+          Start-Process (Join-Path $dir 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          for ($i = 0; $i -lt 60 -and (Test-Path (Join-Path $dir 'bin\baton.js')); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path (Join-Path $dir 'bin\baton.js')) { throw 'uninstall left the app files behind' }
+          if (-not (Test-Path (Join-Path $env:BATON_HOME 'mobile\secret.json'))) { throw 'uninstall removed the data folder, which it must keep' }
+          Write-Host "installer self-test passed for $v"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: baton-windows
+          path: |
+            dist/*.exe
+            dist/*.zip
+          if-no-files-found: error
+
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14        # Apple Silicon
+            arch: arm64
+          - runner: macos-15-intel  # Intel. build-dmg.sh can also build x64 on an arm64 runner (ARCH=x64)
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci --omit=dev
+
+      - name: Smoke test (headless, no Claude Desktop)
+        run: |
+          export APPDATA="$RUNNER_TEMP/appdata" CLAUDE_CONFIG_DIR="$RUNNER_TEMP/claude-config"
+          mkdir -p "$APPDATA" "$CLAUDE_CONFIG_DIR"
+          npm test
+
+      - name: Build Baton.app, DMG and portable tarball
+        run: ARCH=${{ matrix.arch }} bash installer/macos/build-dmg.sh
+
+      - name: Self-test the DMG
+        run: |
+          set -euo pipefail
+          v="$(node -p "require('./package.json').version")"
+          dmg="dist/Baton-$v-${{ matrix.arch }}.dmg"
+          mnt="$RUNNER_TEMP/baton-dmg"
+          mkdir -p "$mnt"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg"
+          c="$mnt/Baton.app/Contents"
+          test -x "$c/MacOS/Baton"
+          bash -n "$c/MacOS/Baton"
+          test -f "$c/Resources/baton.icns"
+          plutil -lint "$c/Info.plist"
+          node_bin="$c/Resources/app/runtime/node"
+          file "$node_bin"
+          export BATON_HOME="$RUNNER_TEMP/baton-home" BATON_PORT=18788 BATON_APP_PORT=18790 APPDATA="$RUNNER_TEMP/appdata"
+          "$node_bin" --version
+          "$node_bin" "$c/Resources/app/bin/baton.js" help
+          got="$("$node_bin" "$c/Resources/app/bin/baton.js" --version)"
+          [ "$got" = "$v" ] || { echo "baton --version said '$got', expected $v"; exit 1; }
+          "$c/Resources/app/baton" status
+          hdiutil detach "$mnt"
+          echo "DMG self-test passed for $v (${{ matrix.arch }})"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: baton-macos-${{ matrix.arch }}
+          path: |
+            dist/*.dmg
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: [windows, macos]
+    # Windows must pass. A macOS failure does not block the release; its files are just left out.
+    if: always() && needs.windows.result == 'success' && (github.ref_type == 'tag' || inputs.publish)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Version, checksums and notes
+        id: meta
+        run: |
+          v="$(node -p "require('./package.json').version")"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
+          (cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          cp installer/RELEASE_NOTES.md "$RUNNER_TEMP/notes.md"
+          sed -i "s/<version>/$v/g" "$RUNNER_TEMP/notes.md"
+          if [ "${{ needs.macos.result }}" != "success" ]; then
+            printf '\n> **Note:** one or more macOS builds failed in this release run, so not every macOS file is attached.\n' >> "$RUNNER_TEMP/notes.md"
+          fi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Baton ${{ steps.meta.outputs.version }}
+          body_path: ${{ runner.temp }}/notes.md
+          prerelease: ${{ contains(steps.meta.outputs.version, '-') }}
+          fail_on_unmatched_files: true
+          files: dist/*

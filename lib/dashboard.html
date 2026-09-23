@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Baton control</title>
+<style>
+:root{--bg:#faf9f7;--panel:#fff;--line:#e5e2dd;--txt:#1a1a1a;--dim:#6b6b6b;--acc:#c4623f;
+--run:#2f7fd8;--wait:#a8841f;--done:#2f9a5e;--fail:#c9443d;--yellow:#b8860b;--blue:#2f7fd8;--idle:#9aa0a8}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1012;--panel:#17191d;--line:#26292f;--txt:#e8e8ea;--dim:#9aa0a8;--acc:#d97757;
+--run:#4a9eff;--wait:#c8a44a;--done:#4ac07a;--fail:#e0554e;--yellow:#f0b429;--blue:#4a9eff;--idle:#5a5f66}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font:13px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:5;flex-wrap:wrap}
+h1{font-size:15px;margin:0 6px 0 0;font-weight:650}
+a{color:var(--acc)}
+.pill{padding:2px 9px;border-radius:99px;font-size:11px;font-weight:600;border:1px solid var(--line);white-space:nowrap}
+.p-run{color:var(--run);border-color:var(--run)}.p-wait{color:var(--wait);border-color:var(--wait)}
+.p-done{color:var(--done);border-color:var(--done)}.p-fail{color:var(--fail);border-color:var(--fail)}
+main{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:14px 16px;align-items:start}
+@media(max-width:1000px){main{grid-template-columns:1fr}}
+section{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;min-width:0}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
+.wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;color:var(--dim);font-weight:600;padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+.mono{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:11px}
+.dim{color:var(--dim)}
+.err{color:var(--fail);font-size:11px;max-width:340px;word-break:break-word}
+.title{max-width:290px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dot{display:inline-block;width:8px;height:8px;border-radius:99px;margin-right:6px;vertical-align:middle}
+.d-run{background:var(--run)}.d-wait{background:var(--wait)}.d-done{background:var(--done)}
+.d-fail{background:var(--fail)}.d-yellow{background:var(--yellow)}.d-blue{background:var(--blue)}.d-idle{background:var(--idle)}
+form{display:flex;gap:8px;padding:12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+input,select,textarea,button{background:var(--bg);color:var(--txt);border:1px solid var(--line);border-radius:7px;padding:7px 10px;font:inherit;max-width:100%}
+textarea{flex:1 1 260px;min-height:38px;resize:vertical}
+button{cursor:pointer;font-weight:600}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+button.mini{padding:2px 8px;font-size:11px;font-weight:500}
+.preview{padding:8px 14px;font-size:11px;color:var(--dim);font-family:ui-monospace,monospace;word-break:break-word}
+.grp{padding:7px 14px;border-bottom:1px solid var(--line);background:var(--bg);font-weight:600;font-size:12px}
+.grp .c{font-weight:400;color:var(--dim);margin-left:6px}
+.warn{background:rgba(201,68,61,.1);border:1px solid var(--fail);color:var(--fail);padding:7px 12px;border-radius:7px;font-size:11px;margin:10px 14px}
+.esc{font-size:10px;color:var(--acc)}
+.note{font-size:11px;color:var(--dim);padding:0 14px 10px}
+</style>
+
+<header>
+  <h1>Baton · control</h1>
+  <span class="pill p-run" id="s-run">running 0</span>
+  <span class="pill p-wait" id="s-wait">queued 0</span>
+  <span class="pill p-done" id="s-done">done 0</span>
+  <span class="pill p-fail" id="s-fail">failed 0</span>
+  <span class="pill" id="s-cost" title="Subscription quota used, shown as what the same tokens would cost on the paid API. With subscription sign-in no money is charged.">quota ≈0</span>
+  <span class="pill" id="s-cdp">desktop ?</span>
+  <a class="pill" href="http://127.0.0.1:__APP_PORT__/" target="_blank" rel="noopener">open the app</a>
+  <span class="dim mono" id="s-at" style="margin-left:auto"></span>
+</header>
+
+<main>
+  <section style="grid-column:1/-1">
+    <h2>Submit a task — Baton picks the model and effort</h2>
+    <form id="f">
+      <textarea id="prompt" placeholder="Describe the task. The router grades it easy…extra hard and starts a worker on the model and effort set for that level (Settings › Models)."></textarea>
+      <select id="level" title="Force a difficulty level"><option value="">auto level</option></select>
+      <select id="effort" title="Override only the effort"><option value="">auto effort</option><option>low</option><option>medium</option><option>high</option><option>max</option></select>
+      <input id="cwd" placeholder="folder (optional)" style="flex:0 1 220px" title="The folder the worker runs in. Blank = Baton's home folder.">
+      <label class="dim" style="display:flex;align-items:center;gap:5px"><input type="checkbox" id="isolate" style="width:auto"> isolate</label>
+      <button class="primary" type="submit">Dispatch</button>
+    </form>
+    <div class="preview" id="prev">routing preview appears as you type…</div>
+    <div class="note">This page is served on 127.0.0.1 only and answers only to this computer. Workers use your Claude subscription, never a paid API key.</div>
+  </section>
+
+  <section>
+    <h2>Tasks</h2>
+    <div class="wrap"><table>
+      <thead><tr><th>id</th><th>title</th><th>model/effort</th><th>status</th><th>worker</th><th>result / error</th><th></th></tr></thead>
+      <tbody id="tasks"><tr><td colspan="7" class="dim" style="padding:14px">no tasks yet</td></tr></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Claude Desktop sessions <span class="dim" style="text-transform:none">— by group; read from disk, never opened</span></h2>
+    <div id="dtop"></div>
+    <div class="wrap"><table>
+      <thead><tr><th>state</th><th>session</th><th>note</th></tr></thead>
+      <tbody id="sessions"><tr><td colspan="3" class="dim" style="padding:14px">waiting for the first snapshot…</td></tr></tbody>
+    </table></div>
+  </section>
+</main>
+
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const STATUS_DOT = { running: 'd-run', queued: 'd-wait', done: 'd-done', failed: 'd-fail', cancelled: 'd-idle' };
+const SESS_DOT = { running: 'd-run', awaiting_input: 'd-yellow', unread: 'd-blue', idle: 'd-idle', archived: 'd-idle' };
+const SESS_LABEL = { running: 'running', awaiting_input: 'question ●', unread: 'unread ●', idle: 'idle', archived: 'archived' };
+const RANK = x => x.state === 'awaiting_input' ? 0 : x.state === 'unread' ? 1 : x.state === 'running' ? 2 : 3;
+let ladder = [];
+
+function post(url, body) {
+  return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })
+    .then(r => r.json()).catch(e => ({ ok: false, error: e.message }));
+}
+
+async function load() {
+  let d; try { d = await (await fetch('/api/state')).json(); } catch { return; }
+  if (!d || !d.ok) return;
+  const s = d.summary || {};
+  $('#s-run').textContent = 'running ' + (s.running || 0);
+  $('#s-wait').textContent = 'queued ' + (s.queued || 0);
+  $('#s-done').textContent = 'done ' + (s.done || 0);
+  $('#s-fail').textContent = 'failed ' + (s.failed || 0);
+  $('#s-cost').textContent = 'quota ≈' + (s.costUsd || 0).toFixed(2) + ' API-equiv · ' + (s.escalations || 0) + ' escalations';
+  $('#s-at').textContent = 'updated ' + new Date().toLocaleTimeString();
+
+  if (Array.isArray(d.ladder) && d.ladder.join() !== ladder.join()) {
+    ladder = d.ladder;
+    $('#level').innerHTML = '<option value="">auto level</option>' + ladder.map((l, i) => `<option value="${i}">${esc(l)}</option>`).join('');
+  }
+
+  const tasks = d.tasks || [];
+  $('#tasks').innerHTML = !tasks.length ? '<tr><td colspan="7" class="dim" style="padding:14px">no tasks yet</td></tr>' : tasks.slice(0, 80).map(t => {
+    const e = t.escalations || [];
+    const last = e[e.length - 1];
+    const escs = e.length ? `<div class="esc">↑ escalated ${e.length}× (${esc(last.from && last.from.model)}/${esc(last.from && last.from.effort)} → ${esc(t.model)}/${esc(t.effort)})</div>` : '';
+    const out = t.status === 'failed' ? `<span class="err">${esc(String(t.error || '').slice(0, 220))}</span>` : `<span class="dim">${esc(String(t.result || '').slice(0, 150))}</span>`;
+    const act = (t.status === 'running' || t.status === 'queued') ? `<button class="mini" data-act="stop" data-id="${esc(t.id)}">stop</button>`
+      : t.status === 'failed' ? `<button class="mini" data-act="escalate" data-id="${esc(t.id)}">escalate ↑</button>` : '';
+    return `<tr>
+      <td class="mono">${esc(t.id)}</td>
+      <td><div class="title" title="${esc(t.title)}">${esc(t.title)}</div>
+        <div class="dim mono" style="font-size:10px">${esc(t.type)}/${esc(t.complexity)}${t.reuseOf ? ' · reused context' : ''}${t.isolate ? ' · isolated' : ''}${t.dispatch ? ' · ' + esc(t.dispatch) : ''}</div></td>
+      <td class="mono">${esc(t.model || '-')}/${esc(t.effort || '-')}</td>
+      <td><span class="dot ${STATUS_DOT[t.status] || 'd-idle'}"></span>${esc(t.status)}${t.attempt > 1 ? ` <span class="dim">a${esc(t.attempt)}</span>` : ''}${escs}</td>
+      <td class="mono dim">${t.pid ? 'pid ' + esc(t.pid) : t.guiSessionId ? 'desktop' : '—'}</td>
+      <td>${out}</td><td>${act}</td></tr>`;
+  }).join('');
+
+  $('#s-cdp').textContent = 'desktop ' + (d.desktop ? 'read ' + new Date(d.desktop.at).toLocaleTimeString() : 'not read yet');
+  $('#dtop').innerHTML = d.desktopError ? `<div class="warn">reading Claude Desktop failed: ${esc(d.desktopError)}</div>` : '';
+  if (!d.desktop || !d.desktop.sessions) { $('#sessions').innerHTML = '<tr><td colspan="3" class="dim" style="padding:14px">no snapshot yet</td></tr>'; return; }
+  const groups = (d.desktop.groups && d.desktop.groups.length) ? d.desktop.groups
+    : [{ group: '(all)', sessions: d.desktop.sessions }];
+  const byRank = g => Math.min(...g.sessions.map(RANK), 9);
+  $('#sessions').innerHTML = groups.slice().sort((a, b) => byRank(a) - byRank(b)).map(g => {
+    const rows = g.sessions.filter(x => x.state !== 'archived').sort((a, b) => RANK(a) - RANK(b)).slice(0, 25);
+    if (!rows.length) return '';
+    return `<tr><td colspan="3" class="grp">${esc(g.group)}<span class="c">${g.sessions.length}</span></td></tr>` + rows.map(x => `<tr>
+      <td><span class="dot ${SESS_DOT[x.state] || 'd-idle'}"></span>${esc(SESS_LABEL[x.state] || x.state)}</td>
+      <td><div class="title" title="${esc(x.title)}">${esc(x.title)}</div></td>
+      <td class="dim">${x.doNotOpen ? 'protected — never opened automatically' : x.archiveCandidate ? 'archivable · ' + esc(x.archiveReason) : ''}</td></tr>`).join('');
+  }).join('') || '<tr><td colspan="3" class="dim" style="padding:14px">no sessions</td></tr>';
+}
+
+$('#tasks').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-act]');
+  if (!b) return;
+  b.disabled = true;
+  const r = await post(`/api/task/${encodeURIComponent(b.dataset.id)}/${b.dataset.act}?by=dashboard`);
+  if (r && r.ok === false && r.error) alert(r.error);
+  load();
+});
+
+function forced() {
+  const i = $('#level').value;
+  const rung = i === '' ? null : (ladder[Number(i)] || '');
+  const m = rung && /:\s*(.+)\/([a-z]+)\s*$/.exec(rung);
+  return { model: m ? m[1] : undefined, effort: $('#effort').value || (m ? m[2] : undefined) };
+}
+
+let pvTimer;
+function preview() {
+  clearTimeout(pvTimer);
+  const v = $('#prompt').value;
+  if (!v.trim()) { $('#prev').textContent = 'routing preview appears as you type…'; return; }
+  pvTimer = setTimeout(async () => {
+    const r = await post('/api/route-preview', { prompt: v });
+    const d = r && r.decision;
+    if (!d) return;
+    const f = forced();
+    const model = f.model || d.model, effort = f.effort || d.effort;
+    $('#prev').textContent = `→ ${model}/${effort}${f.model || f.effort ? ' (forced; router said ' + d.model + '/' + d.effort + ')' : ''} · ${d.mode} · ${d.type}/${d.complexity} · confidence ${Number(d.confidence).toFixed(2)}${d.isolate ? ' · isolated' : ''}`;
+  }, 250);
+}
+$('#prompt').addEventListener('input', preview);
+$('#level').addEventListener('change', preview);
+$('#effort').addEventListener('change', preview);
+
+$('#f').addEventListener('submit', async e => {
+  e.preventDefault();
+  const prompt = $('#prompt').value.trim();
+  if (!prompt) return;
+  const f = forced();
+  const r = await post('/api/task', { prompt, model: f.model, effort: f.effort, isolate: $('#isolate').checked, cwd: $('#cwd').value.trim() || undefined });
+  $('#prev').textContent = r && r.ok ? `dispatched ${r.task.id} → ${r.task.model}/${r.task.effort}` : 'not dispatched: ' + ((r && r.error) || 'unknown error');
+  if (r && r.ok) $('#prompt').value = '';
+  load();
+});
+
+load(); setInterval(load, 3000);
+</script>
+</html>
