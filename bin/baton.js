@@ -108,7 +108,7 @@ async function pairCmd() {
 function mcpInstall(remove) {
   const script = path.join(ROOT, 'mcp', 'baton-mcp.js');
   const argv = remove ? ['mcp', 'remove', '--scope', 'user', 'baton'] : ['mcp', 'add', '--scope', 'user', 'baton', '--', process.execPath, script];
-  const r = spawnSync('claude', argv, { stdio: 'inherit', shell: WIN });
+  const r = spawnSync('claude', argv, { stdio: 'inherit', shell: WIN, windowsHide: true });
   if (r.status === 0) return console.log(C.g(remove ? 'Removed.' : 'Registered MCP server "baton". Restart Claude Desktop to load the tools.'));
   if (remove) return console.log(C.y('The `claude` CLI was not found or refused. If ~/.claude.json lists "baton" under "mcpServers", delete that entry by hand.'));
   console.log(C.y('The `claude` CLI was not found or refused. Add this to ~/.claude.json under "mcpServers" instead:'));
@@ -177,7 +177,7 @@ async function setup() {
       (WIN ? ' — or just leave it: Baton switches the debugger on by itself once you are away from the keyboard.' : '.')));
   } else if (!(await cdpUp()) && WIN) {
     console.log(C.y('\nTrying to switch on the Claude Desktop debugger for you (Claude will come to the front briefly)…'));
-    spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'scripts', 'enable-debugger.ps1')], { stdio: 'inherit' });
+    spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'scripts', 'enable-debugger.ps1')], { stdio: 'inherit', windowsHide: true });
   }
   let mcp = false;
   try { const j = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude.json'), 'utf8')); mcp = !!(j.mcpServers && j.mcpServers.baton); } catch {}
@@ -369,7 +369,7 @@ async function accountsCmd() {
     case 'autostart': return autostart(args[1]);
     case 'debugger':
       if (!WIN) return console.log('In Claude Desktop: Developer > Enable Main Process Debugger.');
-      return void spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'scripts', 'enable-debugger.ps1')], { stdio: 'inherit' });
+      return void spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'scripts', 'enable-debugger.ps1')], { stdio: 'inherit', windowsHide: true });
     case 'mcp': return mcpInstall(args[1] === 'remove');
     case 'hooks': return void require('../hooks/install').cli(args.slice(1));
     case 'accounts': return accountsCmd();
