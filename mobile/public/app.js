@@ -502,8 +502,16 @@ function blocks(messages) {
   };
   const endTurn = () => { flushWork(); flushSaid(); };
 
-  messages.forEach((m, i) => {
-    const k = keyOf(m) + ':' + i;
+  // Keys must not carry the row's INDEX. The stream sends a sliding 60-row window, so every new row
+  // shifted every index: each working group got a new key on every update, which closed a group he
+  // had opened and lost the reading anchor. Count repeats instead of positions.
+  const seenKey = new Map(), seenId = new Map();
+  const nth = (map, v) => { const n = map.get(v) || 0; map.set(v, n + 1); return n; };
+  messages.forEach((m) => {
+    const k = keyOf(m) + ':' + nth(seenKey, keyOf(m));
+    // A working group is named by its FIRST row's identity (role + time), which stays the same while
+    // the turn runs; keyOf() changes as that row's tools finish.
+    const wk = 'w:' + m.role + ':' + (m.ts || '') + ':' + nth(seenId, m.role + ':' + (m.ts || ''));
     const note = m.role === 'system';
     const working = m.thinking || (m.tools && m.tools.length) || m.role === 'result' || note;
     const speaks = m.role === 'assistant' && (m.text || m.ask);
@@ -512,7 +520,7 @@ function blocks(messages) {
     if (note && said) flushSaid();
 
     if (working) {
-      if (!run) run = { type: 'work', key: k, steps: [], n: 0 };
+      if (!run) run = { type: 'work', key: wk, steps: [], n: 0 };
       run.steps.push(note ? messageHtml(m) : workHtml(m));
       run.n += (m.tools ? m.tools.length : 0) + (m.role === 'result' ? 1 : 0) +
                (m.thinking ? 1 : 0) + (note ? 1 : 0);
@@ -609,25 +617,64 @@ setInterval(renderLive, 1000);
 
 const nearBottom = (el) => el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_TOL;
 function setScrollTop(el, v) { el.scrollTop = v; lastProgTop = el.scrollTop; }
-const anchorKey = (el) => (el.dataset.key || '') + '|' + el.className + '|' + (el.textContent || '').slice(0, 80);
-function readingAnchor(log) {
-  const top = log.getBoundingClientRect().top;
-  for (const el of log.children) {
-    if (el.classList.contains('stamp')) continue;
-    const r = el.getBoundingClientRect();
-    if (r.bottom > top) return { key: anchorKey(el), delta: r.top - top };
-  }
-  return null;
+// A working group is identified by its data-key alone: its summary ("Working · 42 steps · Read file")
+// changes with every step, so a key built from the text stopped matching mid-turn.
+const anchorKey = (el) => el.dataset.key ? 'k:' + el.dataset.key : el.className + '|' + (el.textContent || '').slice(0, 80);
+const anchorable = (el) => !el.classList.contains('stamp') && el.id !== 'log-top';
+function keyCounts(log) {
+  const n = new Map();
+  for (const el of log.children) if (anchorable(el)) { const k = anchorKey(el); n.set(k, (n.get(k) || 0) + 1); }
+  return n;
 }
-function restoreAnchor(log, a) {
-  if (!a) return false;
-  const top = log.getBoundingClientRect().top;
+/* Every block on screen, top first, each with where it sits. One anchor was not enough: when that block
+   was itself replaced or renamed, the render fell back to an absolute scrollTop and the page moved under
+   the reader. The first candidate that survives the render wins. Keys that appear twice (two identical
+   "ok" bubbles) are skipped, since they could restore to the wrong one. */
+function readingAnchor(log) {
+  const top = log.getBoundingClientRect().top, bottom = top + log.clientHeight;
+  const counts = keyCounts(log), out = [];
   for (const el of log.children) {
-    if (el.classList.contains('stamp') || anchorKey(el) !== a.key) continue;
+    if (!anchorable(el)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.bottom <= top) continue;
+    if (r.top >= bottom || out.length >= 8) break;
+    const key = anchorKey(el);
+    if (counts.get(key) === 1) out.push({ key, delta: r.top - top });
+  }
+  return out.length ? out : null;
+}
+function restoreAnchor(log, list) {
+  if (!list) return false;
+  const top = log.getBoundingClientRect().top;
+  const counts = keyCounts(log), byKey = new Map();
+  for (const el of log.children) if (anchorable(el)) byKey.set(anchorKey(el), el);
+  for (const a of list) {
+    const el = counts.get(a.key) === 1 && byKey.get(a.key);
+    if (!el) continue;
     setScrollTop(log, log.scrollTop + (el.getBoundingClientRect().top - top) - a.delta);
     return true;
   }
   return false;
+}
+/* The stream and the timed reload send only the LAST 60 rows. Rendering that as the whole list threw
+   away every older page scrolled up into, so the message being read left the DOM and the view jumped.
+   Unless the reader is at the bottom, keep what is loaded above the tail and splice the tail on where
+   the two overlap. At the bottom the tail alone is right: nothing above is on screen, and it keeps the
+   list bounded. */
+function applyTail(tail, startByte, hasMore) {
+  const cur = state.messages || [];
+  const page = () => { if (startByte !== undefined && startByte !== null) { state.oldestByte = startByte; state.hasMore = !!hasMore; } };
+  if (!cur.length || !tail.length || scrollToBottomNext || logAtBottom) { page(); return tail; }
+  const id = (m) => m.role + ':' + (m.ts || '');
+  const t0 = id(tail[0]);
+  for (let j = 0; j < cur.length; j++) {
+    if (id(cur[j]) !== t0) continue;
+    let same = true;
+    for (let k = 1; k < 4 && j + k < cur.length && k < tail.length; k++) if (id(cur[j + k]) !== id(tail[k])) { same = false; break; }
+    // Older pages stay, so oldestByte / hasMore still describe the top of what is loaded.
+    if (same) return cur.slice(0, j).concat(tail);
+  }
+  page(); return tail;    // no overlap: more arrived than one window holds; the tail is the truth
 }
 function renderJump() {
   const b = $('jump'); if (!b) return;
@@ -1244,13 +1291,11 @@ async function reloadOpenChat(force, opts = {}) {
     const d = await api('/api/session/' + encodeURIComponent(id) + '?limit=60', { timeoutMs: 12000 });
     if (state.open !== id) return;
     if (!d.transcript) return;
-    state.oldestByte = d.transcript.startByte;
-    state.hasMore = !!d.transcript.hasMore;
     renderHeader(d.meta);
     renderQuestion(d.transcript.pendingQuestion);
     if (d.transcript.chips) setChipBadge(d.transcript.chips.length);
     retireSpentDraft(d.transcript.messages);
-    renderLog(d.transcript.messages, false);
+    renderLog(applyTail(d.transcript.messages, d.transcript.startByte, d.transcript.hasMore), false);
     if (!state.es || state.es.readyState === 2) connectStream(id);
   } catch (e) {
     if (!(state.messages || []).length && /Loading/.test($('log').textContent || '')) openChat(id);
@@ -1291,7 +1336,7 @@ function connectStream(watch) {
     const d = JSON.parse(ev.data);
     if (d.id !== state.open) return;
     if (state.liveSuggestion) { state.liveSuggestion = null; renderSuggestion(state.meta); }
-    renderLog(d.messages);
+    renderLog(applyTail(d.messages, d.startByte, d.hasMore));
     if (d.meta) renderHeader(d.meta);
     if (state.meta && !$('sheet').classList.contains('hidden') && Date.now() - (state._tierReadAt || 0) > 3000) {
       state._tierReadAt = Date.now();
@@ -2902,9 +2947,6 @@ async function createSession() {
 async function loadMore() {
   if (state.loadingMore || !state.hasMore || !state.open) return;
   state.loadingMore = true;
-  const log = $('log');
-  const before = log.scrollHeight;
-  const top = log.scrollTop;
   try {
     const forSession = state.open;
     const d = await api(`/api/session/${encodeURIComponent(forSession)}?before=${state.oldestByte}&limit=60`);
@@ -2915,8 +2957,9 @@ async function loadMore() {
     if (older.length) {
       const seen = new Set(state.messages.map(keyOf));
       const fresh = older.filter(m => !seen.has(keyOf(m)));
+      // renderLog() puts the reading anchor back. A scrollTop write here would use a position read
+      // BEFORE the fetch, snapping a fling made during the fetch back to where it started.
       renderLog(fresh.concat(state.messages), true);
-      log.scrollTop = top + (log.scrollHeight - before);
     }
   } catch (e) {
     toast('Could not load older messages: ' + e.message, true);

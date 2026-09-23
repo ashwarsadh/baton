@@ -438,7 +438,8 @@ async function poll() {
       const tr = sessions.transcript(sess, { limit: 60 });
       const pq = sessions.pendingQuestion(sess);
       const dec = all.find(s => s.id === wid);
-      const payload = { id: wid, messages: tr.messages, pendingQuestion: pq || null, meta: dec ? slimSession(dec) : null };
+      // startByte/hasMore let the client keep its paging state true when it keeps the tail alone.
+      const payload = { id: wid, messages: tr.messages, startByte: tr.startByte, hasMore: tr.hasMore, pendingQuestion: pq || null, meta: dec ? slimSession(dec) : null };
       for (const c of stale) { c.stamp = stamp; sseSend(c, 'messages', payload); }
     }
   } catch (e) { log('poll error: ' + e.message); }

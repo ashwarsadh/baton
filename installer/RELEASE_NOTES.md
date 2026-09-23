@@ -1,5 +1,12 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.16
+
+**The message you are reading stays put.** In a long conversation, after you scrolled up far enough to load older
+messages, the next reply could throw those older messages away and jump the view to somewhere else. New replies
+now land below without moving what is on screen; the ↓ button says how many arrived. An expanded "Working"
+group also stays open while the turn runs.
+
 ## 0.2.15
 
 **The connection dot is round.** In 0.2.14 the green dot beside "Baton" was stretched into a wide oval. It is a
