@@ -4,6 +4,16 @@
 
 <h1 align="center">Baton</h1>
 
+> **Unofficial; not affiliated with or endorsed by Anthropic. Claude is a trademark of Anthropic.**
+>
+> **Status: private, not published.** Baton contains no Claude or Anthropic code, but it drives the proprietary Claude
+> Desktop app through its debugger and internal functions, and it leads with the Claude name. Before any public
+> version, all three of these must be done:
+> 1. **No "Claude" in the name, tagline or logo.** Describe compatibility in plain words, not branding.
+> 2. **No comparison with Claude's Remote Control** (the table in "Why Baton" and the marketing drafts).
+> 3. **A review of Anthropic's terms** (consumer, commercial and usage policy) on automating the Claude Desktop app,
+>    driving it through its debugger and calling its internal functions, with the outcome written down here.
+
 <p align="center"><b>Your Claude Code sessions, in your pocket.</b><br>
 The Code tab of Claude Desktop on your phone and in any browser — every session, live, exactly as it is on your
 computer. Plus auto-resume, one app across several Claude accounts, automatic project organisation, and a
