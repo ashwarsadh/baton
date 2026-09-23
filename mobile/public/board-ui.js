@@ -808,6 +808,8 @@
     const m = /^#board(?:=([a-z]+))?$/.exec(location.hash);
     if (!m) return;
     if (m[1]) B.bucket = m[1];
+    // #board=goals must land on an OPEN register, as the Goals chip does; collapsed it looks empty.
+    if (m[1] === 'goals') { B.goalsOpen = true; B.showHandled = false; }
     openBoard();
   };
   if (document.readyState === 'complete') openIfHashed();

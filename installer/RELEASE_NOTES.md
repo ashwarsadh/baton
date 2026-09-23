@@ -1,5 +1,10 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.7
+
+A link to the Board's goals (`#board=goals`) now opens the goals register expanded, as the Goals chip does;
+before, it opened collapsed and looked empty.
+
 ## 0.2.6
 
 **Text size and density** ("Aa" at the foot of the session list). Text size runs from 70% to 150% and

@@ -252,6 +252,17 @@ const item = (n) => inbox.fold().items.get(n);
     check(upd && upd.error === 'NOT_MASTER' && item(added.n).status === 'open', 'a slave may NOT change items (guard fires)', upd);
   } finally { S.close(); }
 
+  // Goals register (board-ui.js source): the #board=goals deep link opens it the way the chip does, and
+  // "open" is one predicate everywhere, so the chip count cannot drift from the register (AGO counted
+  // closed and failed goals as open with a stray `status !== 'done'`: 144 vs 126).
+  {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'mobile', 'public', 'board-ui.js'), 'utf8');
+    const hashFn = (src.match(/const openIfHashed = [\s\S]*?\n  \};/) || [''])[0];
+    check(/m\[1\] === 'goals'\)[^\n]*B\.goalsOpen = true/.test(hashFn), '#board=goals opens the goals register expanded');
+    const stray = src.match(/\.status\s*[!=]==?\s*'(done|closed|failed|dropped)'/g) || [];
+    check(stray.length === 0 && (src.match(/FINISHED\.includes\(g\.status\)/g) || []).length >= 4, 'goal open/finished is decided only by FINISHED (chip count = register split)', stray);
+  }
+
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}
   console.log(failed ? `\n${failed} check(s) failed` : '\nall checks passed');
   process.exit(failed ? 1 : 0);
