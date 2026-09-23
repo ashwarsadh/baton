@@ -1,5 +1,12 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.2
+
+Model and effort are compared by exact version, never by family. Before, a session on Opus 5.5 lit both
+"Opus 5.5" and "Opus 5" on the phone; switching to Opus 5 could pick Opus 5.5 and report success; moving
+from Opus 5 to Opus 5.5 skipped the confirm dialog; and a change to High effort that never landed passed as
+"Extra high".
+
 ## 0.2.1
 
 The 0.2.0 macOS builds did not pass their checks, so 0.2.0 shipped for Windows only. 0.2.1 fixes that and adds

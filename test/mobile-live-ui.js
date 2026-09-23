@@ -36,12 +36,10 @@ const { check: chk, src } = H;
 
   console.log('\n--- the model matcher speaks both vocabularies ---');
   {
-    const d = src('lib/desktop.js');
-    const fn = d.slice(d.indexOf('function modelMatcher'), d.indexOf('async function awaitUserIdle') > d.indexOf('function modelMatcher') ? d.indexOf('async function awaitUserIdle') : d.indexOf('async function setModel'));
-    // eslint-disable-next-line no-eval
-    const modelMatcher = eval('(' + fn.replace(/\n\}[\s\S]*$/, '\n}') + ')');
+    // The exported matcher, not a slice of source: it leans on normModel/sameModel beside it.
+    const { modelMatcher } = require('../lib/desktop');
     for (const [inp, menu, want] of [['fable', 'Fable 5.1', true], ['Fable 5.1', 'Fable 5.1', true], ['Fable 6', 'Fable 6', true],
-      ['sonnet', 'Sonnet 5', true], ['Opus 5', 'Opus 5', true], ['fable', 'Opus 5', false]]) {
+      ['sonnet', 'Sonnet 5', true], ['Opus 5', 'Opus 5', true], ['Opus 5', 'Opus 5.5', false], ['fable', 'Opus 5', false]]) {
       const m = modelMatcher(inp);
       chk(!!m && m.test(menu) === want, `${JSON.stringify(inp)} vs ${JSON.stringify(menu)} -> ${want}`, m && m.test(menu));
     }

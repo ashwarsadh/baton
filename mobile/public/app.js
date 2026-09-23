@@ -153,7 +153,22 @@ function ago(ts) {
 const shortModel = (m) => String(m || '').replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/-latest$/, '');
 const modelKey = (m) => shortModel(m).replace(/-.*$/, '');
 const modelFamily = (m) => shortModel(String(m || '').trim()).split(/[\s\-_[]/)[0].toLowerCase();
-const pickByFamily = (list, m) => (list || []).find(x => modelFamily(x) === modelFamily(m)) || null;
+// Family is not identity: "Opus 5.5" and "Opus 5" share the family word, so comparing families lit
+// both buttons. The id is the whole version: "Opus 5.5" / "claude-opus-5-5" / "claude-opus-5-5[1m]"
+// -> "opus-5-5". A BARE family ("opus") is an alias and matches its family; nothing else does.
+// Same rule as lib/desktop.js sameModel.
+const modelId = (m) => shortModel(String(m || '').trim().toLowerCase()).replace(/\[[^\]]*\]$/, '')
+  .replace(/[\s._]+/g, '-').replace(/-+$/, '');
+const sameModel = (a, b) => {
+  const x = modelId(a), y = modelId(b);
+  if (!x || !y) return false;
+  if (/^[a-z]+$/.test(x) || /^[a-z]+$/.test(y)) return x.split('-')[0] === y.split('-')[0];
+  return x === y;
+};
+// Exact id first; a bare alias ("opus") falls back to the first of its family, which is the desktop's
+// own default for that family.
+const pickByFamily = (list, m) => (list || []).find(x => sameModel(x, m) && modelId(x) === modelId(m))
+  || (list || []).find(x => sameModel(x, m)) || null;
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => (
@@ -2120,7 +2135,7 @@ function openSheet() {
   $('btn-cancel-run').disabled = false;
   const pick = (endpoint, field, op) => async (v) => {
     const was = m[field];
-    if (field === 'model' && was && modelFamily(was) !== modelFamily(v)) {
+    if (field === 'model' && was && !sameModel(was, v)) {
       const go = await confirmModelSwitch(was, v);
       if (!go) { openSheet(); return; }
     }
@@ -2230,7 +2245,9 @@ async function renderTier(m) {
   tierOverride = { id: m.id, model: d.recorded || null, effort: d.effortLabel || null, until: Date.now() + 20000 };
   if (d.recorded) {
     m.model = d.recorded;
-    [...box.children].forEach(b => b.classList.toggle('on', modelFamily(b.textContent) === modelFamily(d.recorded)));
+    // Exactly ONE button: the one pickByFamily resolves (exact id; a bare alias -> first of its family).
+    const hit = pickByFamily([...box.children].map(b => b.textContent), d.recorded);
+    [...box.children].forEach(b => b.classList.toggle('on', b.textContent === hit));
   }
   if (d.effortLabel) {
     m.effort = d.effortLabel;
