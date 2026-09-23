@@ -16,7 +16,9 @@ const fnOf = (src) => src.slice(src.indexOf('function enableSwipeToClose('), src
 
 const barOnly = (fn) => /bar\.addEventListener\('touchstart'/.test(fn) && /bar\.addEventListener\('touchmove'/.test(fn)
   && !/body\.addEventListener\('touch/.test(fn) && !/scrollTop/.test(fn);
-const bootSafe = (src) => /else if \(!visibleSheetId\(\)\) drawer\(true\);/.test(src) && !/\} else drawer\(true\);/.test(src);
+// Boot opens the first screen only when no sheet is open, and firstScreen() re-checks before it opens anything.
+const bootSafe = (src) => /\} else if \(!visibleSheetId\(\)\) \{\s*window\.__batonFirstScreen = await firstScreen\(\);/.test(src)
+  && /const untouched = \(\) => !state\.open && !visibleSheetId\(\)/.test(src) && !/\} else drawer\(true\);/.test(src);
 
 // The checks fire on the pre-g426 shapes.
 const OLD_FN = "function enableSwipeToClose(sheet) { const sc = 0; body.addEventListener('touchstart', f); return sc.scrollTop <= 0; }";

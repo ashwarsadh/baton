@@ -1,5 +1,12 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.10
+
+**Opens where you left off.** A fresh start of the app no longer shows an empty page behind the session list.
+If the Board has something only you can do, it opens on the Board; otherwise it opens the session you were last
+in (or, the first time, the most recently active one). Anything you tap while it loads wins, and a link to a
+session or to the Board still goes straight there.
+
 ## 0.2.9
 
 **Automatic updates.** A Windows install now keeps itself current. Every 6 hours Baton checks for a new release,

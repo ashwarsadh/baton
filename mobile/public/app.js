@@ -1088,6 +1088,31 @@ function renderHeader(meta) {
   $('chat-sub').textContent = bits.join(' · ');
 }
 
+// The first screen after a cold open, instead of an empty page behind the session list: the Board when
+// something on it is waiting for you (its "For you" items), else the session you were last in here, else
+// the most recently active one. The Board is asked for at most FIRST_SCREEN_WAIT_MS; a slow or disabled
+// Board just means the session. Anything you opened while the list loaded wins.
+const FIRST_SCREEN_WAIT_MS = 2500;
+async function firstScreen() {
+  const untouched = () => !state.open && !visibleSheetId() && !$('drawer').classList.contains('open');
+  let waiting = 0;
+  if (typeof window.boardWaiting === 'function') {
+    waiting = await Promise.race([
+      Promise.resolve().then(() => window.boardWaiting()).catch(() => 0),
+      new Promise(r => setTimeout(() => r(0), FIRST_SCREEN_WAIT_MS)),
+    ]);
+  }
+  if (!untouched()) return 'user';
+  if (waiting > 0 && typeof window.openBoard === 'function') { window.openBoard(); return 'board'; }
+  const list = (state.rawSessions || state.sessions || []).filter(s => !s.archived);
+  let last = null;
+  try { last = localStorage.getItem('baton.lastChat'); } catch {}
+  const pick = (last && list.find(s => s.id === last)) || list.slice().sort((a, b) => (b.at || 0) - (a.at || 0))[0];
+  if (pick) { openChat(pick.id); return 'session'; }
+  drawer(true);
+  return 'drawer';
+}
+
 async function openChat(id) {
   if (!navQuiet && id !== state.open) navRecord();
   if (state.openingId === id) return;
@@ -1099,6 +1124,7 @@ async function openChatInner(id) {
   const sameSession = state.open === id;
   if (state.open && state.open !== id) saveDraft(state.open, $('input').value);
   state.open = id;
+  try { localStorage.setItem('baton.lastChat', id); } catch {}
   state.liveSuggestion = null;
   if (state.pending && state.pending.sid !== id) state.pending = null;
   state.attachments = []; renderAttachments();
@@ -3011,9 +3037,9 @@ const tmark = (k) => { try { window.__batonT[k] = Math.round(performance.now());
     if (want) {
       history.replaceState(null, '', location.pathname);
       openChat(want);
-    } else if (state.sessions.length && window.matchMedia('(min-width:900px)').matches) {
-      openChat(state.sessions[0].id);
-    } else if (!visibleSheetId()) drawer(true);
+    } else if (!visibleSheetId()) {
+      window.__batonFirstScreen = await firstScreen();
+    }
     // Boot finishes after the cached list is on screen, so a sheet may already be open (the #board link
     // opens one at 'load', and so does a quick tap). Opening the drawer over it recorded a history step,
     // and the first X / Done / swipe then closed only that hidden drawer: the control looked dead.
