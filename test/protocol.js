@@ -29,7 +29,10 @@ const wakes = require('../lib/wakes');
 const compact = mp.conductorProtocolText();
 const detail = mp.conductorProtocolText({ detail: true });
 const BUDGET = 18000;
-check(compact.length <= BUDGET, 'compact conductor protocol within its activation budget', `${compact.length} <= ${BUDGET} chars`);
+// Measured with the teachings path put back as its placeholder: the path is the machine's, not the
+// protocol's, and a long temp dir (macOS /var/folders/...) would otherwise fail the budget.
+const compactLen = compact.split(mp.teachingsPath()).join('{TEACHINGS}').length;
+check(compactLen <= BUDGET, 'compact conductor protocol within its activation budget', `${compactLen} <= ${BUDGET} chars`);
 check(detail.length > compact.length + 10000, 'detail:true appends the lesson blocks', `${detail.length} chars`);
 for (const [needle, what] of [
   ['baton_inbox_add', 'inbox-first'], ['BECOMES A GOAL IN THE SAME TURN', 'goal every request'], ['baton_goals', 'read open goals'],
