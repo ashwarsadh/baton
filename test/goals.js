@@ -331,7 +331,7 @@ function told(owner, title, quietH, extra = {}) {
   reset();
   const big = 'x'.repeat(5000);
   const gb = goals.add({ title: 'big', text: big }, { resolve: () => ({ ok: false }) }).goal;
-  check(gb.text.length < 4100 && gb.textFile && fs.readFileSync(gb.textFile, 'utf8').length === 5000, 'text over 4000 chars spills to a side file');
+  check(gb.text.startsWith('x'.repeat(4000) + ' …[full text: ') && !gb.text.includes('x'.repeat(4001)) && gb.textFile && fs.readFileSync(gb.textFile, 'utf8').length === 5000, 'text over 4000 chars spills to a side file');
 
   // ---------------------------------------------------------------- keep-alive
   reset();
