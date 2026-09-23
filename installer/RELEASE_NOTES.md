@@ -1,5 +1,11 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.3
+
+Windows: no Baton command opens a console window any more. `baton setup`, `baton debugger` and the
+MCP registration (also run by the uninstaller) now start their helpers hidden; in a terminal their output still
+shows. A new check fails the build if any future helper could open a window.
+
 ## 0.2.2
 
 Model and effort are compared by exact version, never by family. Before, a session on Opus 5.5 lit both
