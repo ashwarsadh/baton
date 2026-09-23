@@ -1,8 +1,5 @@
 # Reddit post — draft
 
-> **PARKED 2026-09-23 — do not post.** The repository is private until the points under "Status" in the
-> README are resolved. Nothing here is to be posted, scheduled or shared.
-
 > Draft for the maintainer to edit and post by hand. Suggested subreddits: r/ClaudeAI, r/ClaudeCode,
 > r/selfhosted, r/SideProject. Read each subreddit's self-promotion rules first; lead with the problem, keep the
 > link at the end, answer comments. Replace the GIF/screenshot placeholders before posting.

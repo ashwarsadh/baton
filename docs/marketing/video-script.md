@@ -1,8 +1,5 @@
 # Video script outlines — drafts
 
-> **PARKED 2026-09-23 — do not post.** The repository is private until the points under "Status" in the
-> README are resolved. Nothing here is to be posted, scheduled or shared.
-
 > For the maintainer. Record on demo data only (`node test/make-demo.js ./demo`, see README › Try it without
 > Claude Desktop) — never on real sessions. Screen-record the phone (or a phone-sized browser window) and the
 > desktop side by side.
