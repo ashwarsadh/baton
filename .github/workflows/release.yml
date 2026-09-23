@@ -187,6 +187,12 @@ jobs:
             printf '\n> **Note:** one or more macOS builds failed in this release run, so not every macOS file is attached.\n' >> "$RUNNER_TEMP/notes.md"
           fi
 
+      - name: Sign SHA256SUMS.txt (installed copies refuse an update without a valid signature)
+        env:
+          BATON_SIGNING_KEY: ${{ secrets.BATON_SIGNING_KEY }}
+          BATON_REQUIRE_SIGNATURE: ${{ github.repository == 'ashwarsadh/baton' && '1' || '' }}
+        run: node scripts/sign-release.js dist/SHA256SUMS.txt
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || steps.meta.outputs.tag }}

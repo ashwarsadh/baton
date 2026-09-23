@@ -196,6 +196,17 @@ async function reaperTick() {
   } catch (e) { lastReaper = { at: new Date().toISOString(), error: e.message }; orch.log('reaper error: ' + e.message); }
 }
 
+// Self-update (lib/updater.js): every 10 min ask whether a check is due (update.checkHours); a verified
+// newer release is installed by a detached script that stops and restarts this daemon.
+const UPDATE_MS = 10 * 60000;
+async function updateTick() {
+  if (!config.mod('autoUpdate')) return;
+  try {
+    const r = await require('./lib/updater').tick();
+    if (r && r.action) orch.log(`update: ${r.action} ${r.latest || ''}${r.error ? ' — ' + r.error : ''}${r.why ? ' — ' + r.why : ''}`);
+  } catch (e) { orch.log('update error: ' + e.message); }
+}
+
 let lastHygiene = null;
 async function hygieneTick() {
   if (!config.mod('hygiene')) return;
@@ -640,6 +651,8 @@ async function evictWedgedHolder(reason) {
     setTimeout(goalsTick, 120000);
     setInterval(directivesTick, DIRECTIVES_MS);
     setInterval(() => serialise(reaperTick), REAPER_MS);
+    setInterval(updateTick, UPDATE_MS);
+    setTimeout(updateTick, 3 * 60000);
 
     try {
       if (config.mod('app')) require('./mobile')();

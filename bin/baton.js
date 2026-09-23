@@ -209,6 +209,7 @@ ${C.b('Daemon')}
   baton mcp install|remove register the orchestrator tools with Claude Code
   baton hooks install|remove|status [--dry-run]   optional Stop hook: sessions may not end on a question
   baton reaper [--dry|--live] [ids]              one idle-CLI reaper pass now (default: its current mode)
+  baton update [--apply|--status]                is a newer release out? --apply installs it now (Windows installer copies)
                            they can answer themselves (never installed by default; backs up settings.json)
   baton accounts           the Claude accounts on this computer and what a sync would change
   baton accounts sync [--apply] [--two-way] [--to <n>]   preview (default) or write the account sync
@@ -374,6 +375,7 @@ async function accountsCmd() {
     case 'mcp': return mcpInstall(args[1] === 'remove');
     case 'hooks': return void require('../hooks/install').cli(args.slice(1));
     case 'reaper': return void (await require('../lib/reaper').cli(args.slice(1)));
+    case 'update': return void (await require('../lib/updater').cli(args.slice(1)));
     case 'accounts': return accountsCmd();
     case 'index': return require('../lib/index-cli').run(args.slice(1));
     case 'hygiene': return void (await require('../lib/hygiene').cli(args.slice(1)));

@@ -22,6 +22,7 @@
     ['digests', 'Digests', 'Off by default. A lean per-session digest (your turns and the answers, no tool traffic) for masters and overviews.'],
     ['osTasks', 'Scheduled-task inventory', 'Off by default. Lists Windows Task Scheduler, launchd or cron entries with the project each belongs to.'],
     ['hygiene', 'Context hygiene', 'Every 30 min, says what each session’s context needs (compact, write state first, rotate, archive, hold). Writes a report only.'],
+    ['autoUpdate', 'Automatic updates', 'On by default. Every 6 hours Baton checks GitHub for a new release and, on a Windows install, installs it and restarts by itself (about 15 seconds; never while a task runs). A release is installed only when its checksum file carries a valid signature by the Baton release key. Other copies only tell you (`baton update`).'],
     ['reaper', 'Idle-CLI reaper', 'Off by default. Frees the memory (~400 MB each) of sessions idle 3 h or more, using Claude’s own teardown; the next message resumes them. Only logs for its first 24 h. Never touches a session that is running, unread, waiting on you, on Remote Control, or owns a goal.'],
     ['autoCompact', 'Auto-compact', 'Off by default. Types /compact only in a session’s last warm cache cycle, when it is idle and has written its state down. Never cold, running or waiting on you.'],
     ['directives', 'Directives', 'Off by default. Daily, collects your own instructions per project into DIRECTIVES.md in that folder. Never overwrites a file you wrote.'],
@@ -85,7 +86,7 @@
 
   // Modules shown in three groups so the list stays short: the everyday ones open, the rest folded away.
   var MODULE_GROUPS = [
-    ['Main features', ['app', 'autoResume', 'organizer', 'accounts', 'board', 'inbox', 'goalChaser', 'cacheKeeper', 'routines'], true],
+    ['Main features', ['app', 'autoResume', 'organizer', 'accounts', 'board', 'inbox', 'goalChaser', 'cacheKeeper', 'routines', 'autoUpdate'], true],
     ['Orchestration — acts in your sessions', ['orchestrator', 'masterNotify', 'chipAutostart', 'autoCompact', 'reaper', 'inboxAutoResolve', 'finishHook'], false],
     ['Background reports — reads and writes files only', ['transcriptIndex', 'hygiene', 'roles', 'digests', 'summaries', 'osTasks', 'directives'], false],
   ];

@@ -45,6 +45,7 @@
 | Conductor | `lib/master-protocol.js` (protocol + rule sections), `lib/conductor-access.js` |
 | Context hygiene | `lib/hygiene.js` (verdicts, safe auto-/compact), `lib/archive.js` (archive candidates) |
 | Idle-CLI reaper | `lib/reaper.js` (guards run inside the app; releases through its own `teardownQuery`; dry first) |
+| Self-update | `lib/updater.js` (GitHub Releases; Ed25519-signed SHA256SUMS.txt, key embedded; signed in CI by `scripts/sign-release.js`; silent Inno install over the app folder via a WMI-launched script) |
 | Overviews and roles | `lib/engine.js` (pluggable model engine, off by default), `lib/summarize.js`, `lib/roles.js` |
 | Directives | `lib/directions.js` |
 | Accounts | `lib/account-sync.js`, `lib/account-sync/*`, `lib/account-scope.js`, `mobile/accounts.js` |

@@ -1,5 +1,14 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.9
+
+**Automatic updates.** A Windows install now keeps itself current. Every 6 hours Baton checks for a new release,
+downloads the installer, and installs it only if the release's checksum file carries a valid signature by the Baton
+release key and the installer matches it. It then restarts, which takes about 15 seconds and never happens while a task
+is running. Turn it off under Settings › Main features › Automatic updates. `baton update` says whether a newer
+release is out; `baton update --apply` installs it now. The portable zip and macOS copies only report a new release
+for now. Install 0.2.9 once by hand; from then on updates arrive by themselves.
+
 ## 0.2.8
 
 **Closing a sheet.** Swipe down to close now starts only on the bar at the top of a sheet (the handle); scrolling
