@@ -208,7 +208,7 @@ ${C.b('Daemon')}
   baton debugger           switch on Claude Desktop's main-process debugger (Windows)
   baton mcp install|remove register the orchestrator tools with Claude Code
   baton hooks install|remove|status [--dry-run]   optional Stop hook: sessions may not end on a question
-  baton reaper [--dry|--live] [--rc-too] [ids]    one idle-CLI reaper pass now (default: its current mode)
+  baton reaper [--dry|--live] [ids]              one idle-CLI reaper pass now (default: its current mode)
                            they can answer themselves (never installed by default; backs up settings.json)
   baton accounts           the Claude accounts on this computer and what a sync would change
   baton accounts sync [--apply] [--two-way] [--to <n>]   preview (default) or write the account sync

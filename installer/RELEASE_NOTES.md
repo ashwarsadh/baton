@@ -1,11 +1,19 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.5
+
+**Idle-CLI reaper: a Remote Control session is now never released, and the option to allow it is gone.** 0.2.4
+had a `reaper.spareRemoteControl` setting and a `baton reaper --rc-too` flag. Releasing a Remote Control session
+clears its phone link, so it disappears from the phone, and a message from the desktop brings it back under a new
+link, leaving the old phone entry dead. Both were removed; an old `spareRemoteControl: false` in your settings is
+ignored. The guard also covers a session that only has a live Remote Control link.
+
 ## 0.2.4
 
 **Idle-CLI reaper** (optional, off by default). Every open session keeps a Claude Code process of about 400 MB,
 used or not. The reaper frees the ones idle for 3 hours or more through Claude's own teardown; your next message
 resumes the session with its full history. It never touches a session that is running, unread, waiting on you,
-queued, on Remote Control (unless you allow it), owning a goal or in an await. For its first 24 hours it only logs
+queued, on Remote Control, owning a goal or in an await. For its first 24 hours it only logs
 what it would free (`baton reaper` shows a pass now).
 
 ## 0.2.3

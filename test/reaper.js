@@ -84,7 +84,18 @@ console.log('\n--- guards (inside the app) ---');
     check((why[k] || []).includes(g), `${k} spared (${g})`, why[k]);
   }
   check(JSON.stringify(page({ act: false }).torn) === '[]', 'dry never tears down');
-  check(JSON.stringify(page({ spareRC: false }).torn.sort()) === '["ok","rc"]', 'spareRemoteControl false releases the RC session too');
+  check(JSON.stringify(page({ spareRC: false }).torn) === '["ok"]', 'Remote Control is spared even if a caller asks otherwise (the 0.2.4 option is gone)');
+  {
+    const fmB = fakeManager({ ok: {}, rcProcess: { remoteControlProcess: {} }, rcBridgeOnly: { bridgeSessionId: 'session_x' } });
+    // eslint-disable-next-line no-eval
+    const rb = JSON.parse(eval(reaper.PAGE({ idleHours: 3, protect: [], only: null, self: [], spareRC: false, act: true, max: 6 })));
+    const w = Object.fromEntries(rb.map(r => [r.id, r.why]));
+    check(w.rcProcess.includes('remote-control') && w.rcBridgeOnly.includes('remote-control') && JSON.stringify(fmB.torn) === '["ok"]',
+      'an RC process alone, or a live bridge id alone, spares it', rb);
+  }
+  check(!('spareRemoteControl' in reaper.DEFAULTS) && !('spareRemoteControl' in (config.get().reaper || {})), 'no spareRemoteControl setting exists');
+  check(!/o\.spareRC/.test(reaper.PAGE({ idleHours: 3, protect: [], only: null, self: [], act: false, max: 1 })) &&
+        !/(opts|st)\.spareRemoteControl/.test(fs.readFileSync(require.resolve('../lib/reaper'), 'utf8')), 'nothing in the reaper reads an RC opt-out');
   const two = { ...CASES, ok2: {} };
   const fm = fakeManager(two);
   // eslint-disable-next-line no-eval
@@ -154,6 +165,13 @@ console.log('\n--- a whole pass through a stubbed bridge ---');
     check(r.reaped === 1 && fm.torn.length === 1, 'live pass releases, capped', r);
     log = fs.readFileSync(LOG, 'utf8').trim().split('\n').map(l => JSON.parse(l));
     check(log.filter(l => l.action === 'REAPED').length === 1 && log.filter(l => l.action === 'CAPPED').length === 1, 'live logs REAPED, and CAPPED for the one left for the next pass');
+
+    // An upgrade from 0.2.4 with the removed opt-out still in settings.json: it must change nothing.
+    fs.writeFileSync(config.SETTINGS_FILE, JSON.stringify({ reaper: { spareRemoteControl: false } }));
+    fm = fakeManager({ ok: {}, rc: { remoteControlEnabled: true }, bridged: { bridgeSessionId: 'session_y' } });
+    r = await reaper.tick({ mode: 'live', startClock: false, spareRemoteControl: false });
+    check(JSON.stringify(fm.torn) === '["ok"]' && r.reaped === 1, 'an old spareRemoteControl:false in settings (and in the call) still releases no RC session', fm.torn);
+    fs.unlinkSync(config.SETTINGS_FILE);
 
     fs.writeFileSync(CFG, JSON.stringify({ mode: 'off' }));
     fm = fakeManager({ ok: {} });
