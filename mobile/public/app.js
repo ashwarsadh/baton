@@ -2579,33 +2579,38 @@ function hideSheet(el) {
   if (back) back.focus();
 }
 
+// Swipe down to close starts ONLY on the sheet's top bar, never in its content. The bar is sticky and is
+// built here from the sheet's .grab, with an X that closes through navBack(). The earlier rule let the
+// content start the drag once it was scrolled to the top, and an ordinary scroll-up then closed the
+// Board: its list scrolls inside #board-list, which is not the sheet body.
 function enableSwipeToClose(sheet) {
   const body = sheet.querySelector('.sheet-body');
   if (!body || body.dataset.swipeWired) return;
   body.dataset.swipeWired = '1';
   let y0 = 0, t0 = 0, dy = 0, active = false;
 
-  const scrollerUnder = (target) => {
-    for (let el = target; el && el !== body.parentNode; el = el.parentElement) {
-      if (el.nodeType !== 1) break;
-      const oy = getComputedStyle(el).overflowY;
-      if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 1) return el;
-    }
-    return null;
-  };
-  const canStart = (target) => {
-    if (target.closest('button, input, textarea, select, a, [contenteditable]')) return false;
-    const sc = scrollerUnder(target);
-    return sc ? sc.scrollTop <= 0 : true;
-  };
+  let bar = body.querySelector(':scope > .sheet-bar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.className = 'sheet-bar';
+    const grab = body.querySelector(':scope > .grab') || Object.assign(document.createElement('div'), { className: 'grab' });
+    bar.appendChild(grab);
+    const x = document.createElement('button');
+    x.type = 'button'; x.className = 'sheet-x'; x.setAttribute('aria-label', 'Close'); x.textContent = '\u2715';
+    x.onclick = () => navBack();
+    bar.appendChild(x);
+    body.insertBefore(bar, body.firstChild);
+  }
+  // Only the bar, and never its X: a button must stay a button.
+  const canStart = (target) => !!target.closest('.sheet-bar') && !target.closest('button');
 
-  body.addEventListener('touchstart', (e) => {
+  bar.addEventListener('touchstart', (e) => {
     if (e.touches.length !== 1 || !canStart(e.target)) { active = false; return; }
     active = true; y0 = e.touches[0].clientY; t0 = Date.now(); dy = 0;
     body.style.transition = 'none';
   }, { passive: true });
 
-  body.addEventListener('touchmove', (e) => {
+  bar.addEventListener('touchmove', (e) => {
     if (!active) return;
     dy = e.touches[0].clientY - y0;
     if (dy <= 0) { body.style.transform = ''; return; }
@@ -2625,8 +2630,8 @@ function enableSwipeToClose(sheet) {
     }
     dy = 0;
   };
-  body.addEventListener('touchend', end, { passive: true });
-  body.addEventListener('touchcancel', end, { passive: true });
+  bar.addEventListener('touchend', end, { passive: true });
+  bar.addEventListener('touchcancel', end, { passive: true });
 }
 document.querySelectorAll('.sheet').forEach(enableSwipeToClose);
 document.addEventListener('keydown', (e) => {
@@ -3008,7 +3013,10 @@ const tmark = (k) => { try { window.__batonT[k] = Math.round(performance.now());
       openChat(want);
     } else if (state.sessions.length && window.matchMedia('(min-width:900px)').matches) {
       openChat(state.sessions[0].id);
-    } else drawer(true);
+    } else if (!visibleSheetId()) drawer(true);
+    // Boot finishes after the cached list is on screen, so a sheet may already be open (the #board link
+    // opens one at 'load', and so does a quick tap). Opening the drawer over it recorded a history step,
+    // and the first X / Done / swipe then closed only that hidden drawer: the control looked dead.
     watchForUpdates();
   } catch (e) {
     setTimeout(registerSW, 0);

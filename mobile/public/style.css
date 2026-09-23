@@ -1017,3 +1017,19 @@ html[data-density="compact"] .board-conductor{padding:5px 9px; margin:0 0 5px}
 .zoom-val{float:right; color:var(--accent); font-weight:600; font-variant-numeric:tabular-nums}
 #view-display .lbl{display:block; font-size:13px; color:var(--dim); margin:6px 0 2px}
 .display-note{font-size:12px; color:var(--dim); line-height:1.4; margin:10px 0 6px}
+
+/* The sheet's top bar: the ONLY place a swipe-to-close may start (enableSwipeToClose in app.js builds it
+   from the .grab). Sticky, so the handle and the X never scroll away; touch-action:none so a drag on it
+   is a drag, not a page scroll. The body's top padding moves into the bar, otherwise sticky would park
+   it 8px below the top edge with content showing above it. */
+.sheet-body{padding-top:0}
+html[data-density="compact"] .sheet-body{padding-top:0}
+.sheet-bar{position:sticky; top:0; z-index:3; flex:none; display:flex; align-items:center; justify-content:center;
+  min-height:36px; margin:0 -18px 4px; padding:0 18px; background:var(--panel); touch-action:none; cursor:grab}
+html[data-density="compact"] .sheet-bar{margin:0 -14px 2px; padding:0 14px}
+.sheet .sheet-bar .grab{margin:0; width:44px; height:5px}
+.sheet-x{position:absolute; right:6px; top:50%; transform:translateY(-50%); width:44px; height:36px; padding:0;
+  border:0; border-radius:10px; background:transparent; color:var(--dim); font-size:17px; line-height:1; cursor:pointer}
+.sheet-x:hover, .sheet-x:active{background:var(--panel-2); color:var(--txt)}
+.sheet-x:focus-visible{outline:2px solid var(--accent); outline-offset:-2px}
+@media (min-width:900px){ .sheet-body{border-radius:14px} .sheet-bar{border-radius:14px 14px 0 0} }

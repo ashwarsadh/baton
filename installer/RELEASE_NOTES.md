@@ -1,5 +1,12 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.8
+
+**Closing a sheet.** Swipe down to close now starts only on the bar at the top of a sheet (the handle); scrolling
+the content back up no longer closes the Board by accident. Every sheet also has an X in that bar, which stays in
+view while you scroll. Opening the Board from a link no longer puts the session list behind it, so the first
+X, Done or swipe closes the Board instead of seeming to do nothing.
+
 ## 0.2.7
 
 A link to the Board's goals (`#board=goals`) now opens the goals register expanded, as the Goals chip does;

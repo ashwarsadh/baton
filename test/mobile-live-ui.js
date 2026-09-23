@@ -198,8 +198,11 @@ const { check: chk, src } = H;
     chk(a.indexOf('body.dataset.swipeWired') > 0, 'wiring is idempotent');
     const sw = a.slice(a.indexOf('function enableSwipeToClose('), a.indexOf("document.querySelectorAll('.sheet')"));
     chk(sw.indexOf('navBack()') > 0 && sw.indexOf('hideSheet(') < 0, 'the gesture closes through navBack(), not hideSheet()');
-    chk(a.indexOf('sc.scrollTop <= 0') > 0, 'a drag inside anything scrollable only starts at the top');
-    chk(a.indexOf("target.closest('button, input, textarea, select, a, [contenteditable]')") > 0, 'a drag never starts on a control');
+    // Replaced "content may start the drag once scrolled to the top": that closed the Board on a scroll-up.
+    chk(sw.indexOf("target.closest('.sheet-bar')") > 0 && sw.indexOf("bar.addEventListener('touchstart'") > 0
+        && sw.indexOf("body.addEventListener('touch") < 0 && sw.indexOf('scrollTop') < 0,
+        'the drag starts ONLY on the sticky top bar, never in content at any scroll position');
+    chk(sw.indexOf("!target.closest('button')") > 0, 'a drag never starts on the X');
     const nSheets = h.split('class="sheet hidden"').length - 1, nGrabs = h.split('<div class="grab"></div>').length - 1;
     chk(nSheets > 0 && nGrabs === nSheets, `every sheet draws a grab handle (${nGrabs} for ${nSheets})`);
     chk(src('mobile/public/style.css').indexOf('overscroll-behavior:contain') > 0, 'the sheet body contains its overscroll');
