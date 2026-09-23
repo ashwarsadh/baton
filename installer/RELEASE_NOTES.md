@@ -1,5 +1,11 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.1
+
+The 0.2.0 macOS builds did not pass their checks, so 0.2.0 shipped for Windows only. 0.2.1 fixes that and adds
+the macOS downloads. Also fixed: account sync now copies a record's modified time exactly on macOS and Linux
+(before, it could differ by under a millisecond from the source).
+
 ## What's new in 0.2
 
 - **Goal chaser** — goals with owners, checks and due dates; a session that stopped early is nudged, and a
