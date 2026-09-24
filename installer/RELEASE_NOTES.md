@@ -1,5 +1,12 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.18
+
+**Markdown and text files a session sends open in Baton.** Tapping a sent `.md` file opens it in Baton's file
+viewer, formatted: headings are real headings that wrap on a phone, lists show as bullets, and bold that runs
+across a line break still reads as bold. Other text files (`.txt`, `.log`, `.json`, `.csv`, scripts and the like) open
+there as plain text instead of in a new tab. A very large file shows its first 2 MB.
+
 ## 0.2.17
 
 **Files a session sends you open in the app.** When a session hands you a file (Claude Code's SendUserFile), the

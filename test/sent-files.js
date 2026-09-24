@@ -56,5 +56,19 @@ const ok = (c, name) => { assert.ok(c, name); n++; console.log('ok ' + name); };
   ok(/NOT_SENT/.test(idx), 'a path the session did not send is refused');
   ok(/function sentFileHtml\(t\)/.test(app) && /<audio controls preload="metadata"/.test(app) && /\/api\/sent-file\?session=/.test(app), 'the client renders a player through the authenticated route');
   ok(/const sent = \(m\.tools \|\| \[\]\)\.filter\(t => t\.files && t\.files\.length\);/.test(app), 'the card is its own block, not a step inside the working group');
+  // A sent .md or other text file opens in the file viewer; a .md one is formatted.
+  ok(/data-sent=/.test(app) && /openFile\(sentA\.dataset\.p, sentA\.dataset\.sent\)/.test(app), 'a sent text file opens in the file viewer, not a raw tab');
+  ok(/md\(d\.text, true\)/.test(app) && /if \(doc\) h = h\.replace\(\/\^\(#\{1,6\}\)/.test(app) && /if \(!doc\) h = h\.replace\(\/\^#\{1,6\}/.test(app), 'the viewer renders .md with real headings (doc mode); chat keeps bold');
+  {
+    // Doc headings swallow their newline, so they must come AFTER the bullet and table passes, which
+    // anchor on line start; before them, a list right under a heading kept its raw "- ".
+    const m = app.slice(app.indexOf('function md(src, doc)'), app.indexOf('\n}\n', app.indexOf('function md(src, doc)')));
+    ok(m.indexOf('if (doc) h = h.replace(/^(#{1,6})') > m.indexOf("h = h.replace(/^\\s*[-*]\\s+/gm, '• ')") && m.indexOf('if (doc) h = h.replace(/^(#{1,6})') > m.indexOf('h = renderTables(h)'),
+      'doc headings are rendered after the bullet and table passes');
+  }
+  ok(/doc \? \/\\\*\\\*\(\(\?:\[\^\*\\n\]\|\\r\?\\n\(\?!\\r\?\\n\)\)\+\?\)\\\*\\\*\/g/.test(app), 'hard-wrapped bold in a document renders across one line break');
+  const cssSrc = fs.readFileSync(path.join(root, 'public', 'style.css'), 'utf8');
+  ok(/\.filebody \.mdbody \.mdh\{[^}]*white-space:normal/.test(cssSrc), 'a long heading wraps instead of the sheet-title ellipsis');
+  ok(sf.typeOf('notes.markdown') === 'text/plain; charset=utf-8', '.markdown is served as text');
   console.log(`\n${n}/${n} passed`);
 })().catch(e => { console.error('FAIL', e.message); process.exit(1); });

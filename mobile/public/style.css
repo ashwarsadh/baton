@@ -1072,3 +1072,8 @@ html[data-density="compact"] .bcard-acts{margin-top:6px; gap:6px}
 .msg.sentfile audio,.msg.sentfile video{width:100%;max-width:100%}
 .msg.sentfile img{max-width:100%;max-height:calc(60vh / var(--z,1));border-radius:8px;display:block}
 .msg.sentfile .sf-name{color:var(--accent);word-break:break-all;font-size:13px}
+/* Headings in a .md document opened in the file viewer (undoes .sheet h2's one-line ellipsis) */
+.filebody .mdbody .mdh{margin:0;line-height:1.3;font-weight:700;white-space:normal;overflow:visible;text-overflow:clip;flex:none}
+.filebody .mdbody h2.mdh{font-size:19px}
+.filebody .mdbody h3.mdh{font-size:17px}
+.filebody .mdbody h4.mdh,.filebody .mdbody h5.mdh{font-size:15.5px}

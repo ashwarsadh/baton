@@ -216,7 +216,7 @@ async function alreadyLanded(id) {
   } catch { return false; }
 }
 
-function md(src) {
+function md(src, doc) {
   let h = esc(String(src == null ? '' : src).replace(/\0/g, ''));
   const fences = [];
   h = h.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
@@ -246,11 +246,18 @@ function md(src) {
     const tail = m.slice(clean.length);
     return `<a class="fileref" data-p="${clean.replace(/"/g, '&quot;')}">${clean}</a>${tail}`;
   });
-  h = h.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-  h = h.replace(/^#{1,6}\s+(.+)$/gm, '<strong>$1</strong>');
+  // A .md document is hard-wrapped, so its bold often spans one line break (never a blank line).
+  h = h.replace(doc ? /\*\*((?:[^*\n]|\r?\n(?!\r?\n))+?)\*\*/g : /\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  // Chat shows a heading as bold, where one the size of the screen is noise.
+  if (!doc) h = h.replace(/^#{1,6}\s+(.+)$/gm, '<strong>$1</strong>');
   h = h.replace(/(^|[^*\w])\*([^*\n]+)\*(?![*\w])/g, '$1<em>$2</em>');
   h = h.replace(/^\s*[-*]\s+/gm, '• ');
   h = renderTables(h);
+  // A whole .md DOCUMENT in the file viewer gets real headings; a long one is unreadable as bold
+  // lines. The newline after a heading is swallowed because .mdbody is pre-wrap. This runs LAST:
+  // done before the bullet and table passes, it pulled the next line off line-start, so a list
+  // right under a heading kept its raw "- " and a table there would not render.
+  if (doc) h = h.replace(/^(#{1,6})[ \t]+(.+)$\n?/gm, (_, l, t) => { const n = Math.min(l.length + 1, 5); return `<h${n} class="mdh">${t}</h${n}>`; });
   h = h.replace(/\u0000L(\d+)\u0000/g, (_, i) => links[Number(i)]);
   return h.replace(/\u0000(\d+)\u0000/g, (_, i) => fences[Number(i)]);
 }
@@ -558,7 +565,9 @@ function sentFileHtml(t) {
     if (/^(wav|mp3|ogg|oga|opus|m4a|aac|flac)$/.test(e)) out += `<audio controls preload="metadata" src="${esc(url)}"></audio>`;
     else if (/^(mp4|webm|mov)$/.test(e)) out += `<video controls playsinline preload="metadata" src="${esc(url)}"></video>`;
     else if (/^(png|jpe?g|gif|webp|svg)$/.test(e)) out += `<a href="${esc(url)}" target="_blank" rel="noopener"><img loading="lazy" alt="${esc(name)}" src="${esc(url)}"></a>`;
-    out += `<a class="sf-name" href="${esc(url)}" target="_blank" rel="noopener">\ud83d\udcce ${esc(name)}</a></div>`;
+    // A text file opens in Baton's own file viewer (a .md one formatted); the href stays as a fallback.
+    const view = /^(md|markdown|txt|log|json|csv|py|js|ts|sh|ps1|yml|yaml|xml|sql)$/.test(e) ? ` data-sent="${esc(url)}" data-p="${esc(f)}"` : '';
+    out += `<a class="sf-name" href="${esc(url)}"${view} target="_blank" rel="noopener">\ud83d\udcce ${esc(name)}</a></div>`;
   }
   return out + '</div>';
 }
@@ -1471,13 +1480,20 @@ function connectStream(watch) {
   es.onerror = () => { paintConnDot(); };
 }
 
-async function openFile(p) {
+async function openFile(p, sentUrl) {
   showSheet($('fileview'));
   $('file-name').textContent = p.split(/[\\/]/).pop() || p;
   $('file-path').textContent = p;
   $('file-body').innerHTML = '<div class="empty">Opening\u2026</div>';
   let d;
   try {
+    if (sentUrl) {
+      // A sent file lives outside every cwd, so /api/file refuses it; /api/sent-file serves it (its
+      // first 2 MB) and the text branch below renders it exactly as it renders any other file.
+      const r = await fetch(sentUrl, { credentials: 'include', headers: { Range: 'bytes=0-2097151' } });
+      if (!r.ok) { let m = 'HTTP ' + r.status; try { m = (await r.json()).message || m; } catch {} throw new Error(m); }
+      d = { ok: true, kind: 'text', path: p, text: await r.text(), truncated: (() => { const m = /\/(\d+)$/.exec(r.headers.get('Content-Range') || ''); return !!m && +m[1] > 2097152; })() };
+    } else
     d = await api('/api/file?path=' + encodeURIComponent(p) +
                   (state.open ? '&session=' + encodeURIComponent(state.open) : ''));
   } catch (e) {
@@ -1498,8 +1514,8 @@ async function openFile(p) {
   } else if (d.kind === 'text') {
     const isMd = /\.(md|markdown)$/i.test(d.path || '');
     $('file-body').innerHTML =
-      (d.truncated ? '<div class="empty">Showing the last 2 MB.</div>' : '') +
-      (isMd ? `<div class="mdbody">${md(d.text)}</div>`
+      (d.truncated ? `<div class="empty">Showing the ${sentUrl ? 'first' : 'last'} 2 MB.</div>` : '') +
+      (isMd ? `<div class="mdbody">${md(d.text, true)}</div>`
             : `<pre class="code">${esc(d.text)}</pre>`);
   } else {
     $('file-body').innerHTML = `<div class="empty">${esc(d.message || d.error || 'Cannot show this file.')}</div>`;
@@ -1518,6 +1534,8 @@ $('log').addEventListener('click', (e) => {
 });
 
 $('log').addEventListener('click', (e) => {
+  const sentA = e.target.closest('a[data-sent]');
+  if (sentA) { e.preventDefault(); e.stopPropagation(); openFile(sentA.dataset.p, sentA.dataset.sent); return; }
   const a = e.target.closest('.fileref');
   if (!a) return;
   e.preventDefault();
