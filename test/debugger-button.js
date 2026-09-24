@@ -27,6 +27,13 @@ const ok = (c, name) => { assert.ok(c, name); n++; console.log('ok ' + name); };
   ok(/turning on Claude's debugger in \$i/.test(ps1) && /0x08000000 \| 0x80 \| 0x20/.test(ps1), 'a click-through, non-activating 3-2-1 countdown shows on screen');
   ok(/oauth:tokenCacheV2/.test(ps1) && /Finish 10/.test(ps1), 'it waits for Claude Desktop to be signed in');
   ok(!/Start-Sleep -Milliseconds 1[2-9]\d\d/.test(ps1) && /function WaitFind/.test(ps1), 'fixed long sleeps are replaced by polling');
+  {
+    // g546: input during the 3-2-1 snoozes it; the pointer goes back where it was, both logged.
+    const cd = ps1.slice(ps1.indexOf('$script:bar.Show()'), ps1.indexOf('Say "Baton: turning on Claude\'s debugger..."'));
+    ok(/if \(\[N\]::LastInput\(\) -ne \$base\) \{ \$busy = \$true; break \}/.test(cd) && /-lt \$SnoozeMs/.test(cd) && /Finish 12/.test(cd), 'mouse or keyboard input during the countdown snoozes it, and a busy user ends it as exit 12');
+    ok(ps1.indexOf('$script:cur0 = [System.Windows.Forms.Cursor]::Position') < ps1.indexOf('RealClick $menu') && /cursor before: /.test(ps1) && /SetCursorPos\(\$script:cur0\.X, \$script:cur0\.Y\)[\s\S]{0,200}cursor after: /.test(ps1), 'the pointer is recorded before the clicks and put back after, both positions logged');
+    ok(/new Set\(\[1, 8, 9, 10, 12\]\)/.test(srv), 'a snoozed-out run is retried in a minute, not counted as a failure');
+  }
 
   ok(/const r = await enableDebuggerRun;[\s\S]{0,200}return json\(res, 200, r\)/.test(idx), 'the route returns the result with its message');
   ok(/already: true, message:/.test(idx), 'pressing while it is already on says so');

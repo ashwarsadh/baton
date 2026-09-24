@@ -1,10 +1,13 @@
-param([switch]$Force, [int]$Port = 9229, [int]$Countdown = 3, [switch]$DryRun)
+param([switch]$Force, [int]$Port = 9229, [int]$Countdown = 3, [switch]$DryRun, [int]$SnoozeMs = 5000, [int]$MaxSnoozeMs = 60000)
 # enable-debugger.ps1 - switch on Claude Desktop's main-process debugger for Baton (Windows).
 #
 # Clicks Menu > Developer > Enable Main Process Debugger in the Claude Desktop window through UI
 # Automation, then dismisses the confirmation dialog. Developer mode must be on in Claude Desktop
 # (Help > Troubleshooting > Enable Developer Mode). A small click-through bar on screen counts down
-# ("Baton: turning on Claude's debugger in 3, 2, 1") and then shows the result.
+# ("Baton: turning on Claude's debugger in 3, 2, 1") and then shows the result. Any mouse or keyboard
+# input during the countdown snoozes it: it waits until you have been still for SnoozeMs (5 s), then
+# counts down again; still busy after MaxSnoozeMs (60 s), it gives up for now (exit 12, retried later).
+# The mouse pointer goes back to where it was; both positions are logged.
 #
 # The window keeps its size: a maximised or normal window is only brought to the front, never restored
 # or resized; a minimised one is restored to its last state and minimised again afterwards. Focus goes
@@ -14,7 +17,7 @@ param([switch]$Force, [int]$Port = 9229, [int]$Countdown = 3, [switch]$DryRun)
 #   0 debugger listening           1 Claude Desktop not running    2 Menu button not found
 #   3 Developer menu missing       4 menu item missing             5 port never opened
 #   6 debugger stopped again       7 window could not be raised    8 Windows session disconnected
-#   9 Windows session locked       10 Claude Desktop not signed in
+#   9 Windows session locked       10 Claude Desktop not signed in   12 you kept using the computer
 # -DryRun walks every step up to the menu item, lists the Developer menu and closes it without clicking.
 # It must run in your interactive desktop session: Windows does not deliver simulated clicks to a
 # disconnected or locked session, so 8 and 9 are checked first rather than clicking into nothing.
@@ -40,6 +43,10 @@ public class N {
   [DllImport("wtsapi32.dll")] public static extern bool WTSQuerySessionInformation(IntPtr s, int id, int cls, out IntPtr buf, out int bytes);
   [DllImport("wtsapi32.dll")] public static extern void WTSFreeMemory(IntPtr p);
   public const uint LEFTDOWN=0x02, LEFTUP=0x04;
+  [StructLayout(LayoutKind.Sequential)] public struct LII { public uint cbSize; public uint dwTime; }
+  [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LII p);
+  // Tick of the last keyboard or mouse input in this session; changes whenever you touch either.
+  public static uint LastInput() { LII l = new LII(); l.cbSize = 8; GetLastInputInfo(ref l); return l.dwTime; }
   // WTSConnectState of this session: 0 = active, 4 = disconnected (Remote Desktop closed), -1 = unknown.
   public static int ConnState() { IntPtr b; int n; if (!WTSQuerySessionInformation(IntPtr.Zero, -1, 8, out b, out n)) return -1; int v = Marshal.ReadInt32(b); WTSFreeMemory(b); return v; }
   // The input desktop cannot be opened while the lock screen (or any secure desktop) is showing.
@@ -74,6 +81,13 @@ function Say($m, $c) { if ($script:bar) { try { $script:bar.Say($m, $c) } catch 
 
 function Finish([int]$code, [string]$msg) {
   Log $msg
+  if ($script:cur0) {
+    try {
+      [void][N]::SetCursorPos($script:cur0.X, $script:cur0.Y)
+      $c1 = [System.Windows.Forms.Cursor]::Position
+      Log ("cursor after: {0},{1} (before: {2},{3})" -f $c1.X, $c1.Y, $script:cur0.X, $script:cur0.Y)
+    } catch {}
+  }
   if ($code -ne 0 -and $script:menuOpen) { try { [System.Windows.Forms.SendKeys]::SendWait('{ESC}{ESC}') } catch {} }
   try {
     if ($script:tgt) { [void][N]::AttachThreadInput($script:my, $script:tgt, $false) }
@@ -115,14 +129,37 @@ try {
   $wa = [System.Windows.Forms.Screen]::FromHandle($h).WorkingArea
   $script:bar.Left = [int]($wa.Left + ($wa.Width - $script:bar.Width) / 2); $script:bar.Top = [int]($wa.Bottom - $script:bar.Height - 40)
   $script:bar.Show()
-  for ($i = $Countdown; $i -ge 1; $i--) {
-    Say ("Baton: turning on Claude's debugger in $i" + $(if ($i -gt 1) { '...' } else { ' - hands off the mouse' })) $WHITE
-    $t = [Environment]::TickCount; while ([Environment]::TickCount - $t -lt 1000) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 50 }
+  $snoozeStart = $null
+  while ($true) {
+    $base = [N]::LastInput(); $busy = $false
+    for ($i = $Countdown; $i -ge 1 -and -not $busy; $i--) {
+      Say ("Baton: turning on Claude's debugger in $i" + $(if ($i -gt 1) { '...' } else { ' - hands off the mouse' })) $WHITE
+      $t = [Environment]::TickCount
+      while ([Environment]::TickCount - $t -lt 1000) {
+        [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 50
+        if ([N]::LastInput() -ne $base) { $busy = $true; break }
+      }
+    }
+    if (-not $busy) { break }
+    # You touched the mouse or keyboard: wait until you have been still for SnoozeMs, then count again.
+    if (-not $snoozeStart) { $snoozeStart = [Environment]::TickCount }
+    $script:snoozes++
+    Log ("input during the countdown - snooze " + $script:snoozes)
+    $last = [N]::LastInput(); $quiet = [Environment]::TickCount
+    while ([Environment]::TickCount - $quiet -lt $SnoozeMs) {
+      if ([Environment]::TickCount - $snoozeStart -gt $MaxSnoozeMs) { Finish 12 'you kept using the computer, so Baton will try again in a minute' }
+      $left = [Math]::Ceiling(($SnoozeMs - ([Environment]::TickCount - $quiet)) / 1000)
+      Say ("Baton: paused while you use the computer - trying again in ${left}s") $WHITE
+      [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100
+      $now = [N]::LastInput(); if ($now -ne $last) { $last = $now; $quiet = [Environment]::TickCount }
+    }
   }
   Say "Baton: turning on Claude's debugger..." $WHITE
 } catch { Log ("countdown bar unavailable: " + $_.Exception.Message); $script:bar = $null }
 if ((IsUp) -and (-not $DryRun)) { Finish 0 "debugger on (port $Port)" }
 
+$script:cur0 = [System.Windows.Forms.Cursor]::Position
+Log ("cursor before: {0},{1}" -f $script:cur0.X, $script:cur0.Y)
 $script:my = [N]::GetCurrentThreadId()
 $script:prevFgWin = [N]::GetForegroundWindow()
 $script:wasMinimized = [N]::IsIconic($h)

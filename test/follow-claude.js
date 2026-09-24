@@ -62,6 +62,30 @@ function rig(o = {}) {
   ok(/if \(Wanted\) \{ StartDaemon \}/.test(tray), 'the tray starts Baton at sign-in only when it is wanted');
   ok(tray.indexOf("Baton is asleep - it starts when Claude Desktop opens'; $icon") < tray.indexOf("'Baton stopped - restarting'"), 'the health poll does not restart a Baton that stopped with Desktop');
   ok(/\$follow\.Interval = 3000/.test(tray) && /if \(\$up -and -not \$script:wasUp -and -not \(StoppedByUser\)\) \{ StartDaemon/.test(tray), 'the tray starts Baton within seconds of Desktop opening, never after Quit');
+  ok(/follow-sleep\.json'\), JSON\.stringify[\s\S]{0,120}shutdown\('follow-claude'\)/.test(srv) && /unlinkSync\(path\.join\(registry\.STATE_DIR, 'follow-sleep\.json'\)\)/.test(srv), 'the daemon leaves a sleep marker when it stops for Desktop and clears it on start');
+  if (process.platform === 'win32') {
+    // Headless autostart has no tray: run-daemon.cmd itself must bring Baton back when Desktop opens.
+    const { execFileSync } = require('child_process');
+    const os = require('os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'baton-follow-'));
+    try {
+      const entry = path.join(dir, 'fake.js'), count = path.join(dir, 'count');
+      fs.writeFileSync(entry, `const fs=require('fs');const c=${JSON.stringify(count)};const n=(+(fs.existsSync(c)?fs.readFileSync(c,'utf8'):0))+1;fs.writeFileSync(c,String(n));` +
+        `if(n===1)fs.writeFileSync(${JSON.stringify(path.join(dir, 'follow-sleep.json'))},'{}');`);
+      const env = { ...process.env, BATON_STATE_DIR: dir, BATON_DAEMON_ENTRY: entry, BATON_NODE: process.execPath };
+      const run = () => execFileSync('cmd.exe', ['/d', '/c', path.join(root, 'scripts', 'run-daemon.cmd')], { env, timeout: 60000, windowsHide: true });
+      fs.writeFileSync(path.join(dir, 'stopped-by-user.json'), '{}');
+      run();
+      ok(fs.readFileSync(count, 'utf8') === '1' && !fs.existsSync(path.join(dir, 'follow-sleep.json')), 'asleep, `baton stop` / Quit ends the wait instead of relaunching');
+      fs.unlinkSync(path.join(dir, 'stopped-by-user.json')); fs.writeFileSync(count, '0');
+      let desktopUp = false;
+      try { desktopUp = /claude\.exe/i.test(execFileSync('tasklist', ['/FI', 'IMAGENAME eq claude.exe', '/NH'], { windowsHide: true }).toString()); } catch {}
+      if (desktopUp) {
+        run();
+        ok(fs.readFileSync(count, 'utf8') === '2' && /asleep until Claude Desktop opens/.test(fs.readFileSync(path.join(dir, 'daemon-stdio.log'), 'utf8')), 'asleep with Claude Desktop running, the wrapper starts the daemon again at once');
+      }
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
   const ui = fs.readFileSync(path.join(root, 'mobile', 'public', 'settings-ui.js'), 'utf8');
   ok(/toggle\('followClaude'/.test(ui), 'Settings has the switch');
   console.log(`\n${n}/${n} passed`);

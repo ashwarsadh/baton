@@ -1,5 +1,16 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.20
+
+**The debugger countdown waits for you.** If you move the mouse or type during Baton's "3, 2, 1", it pauses
+("paused while you use the computer - trying again in 5s") and counts down again once you have been still for
+5 seconds. If you keep working for a minute, it gives up for now and tries again a minute later. When it is
+done, the mouse pointer goes back to exactly where it was.
+
+**Baton comes back as soon as Claude Desktop opens, without the tray too.** With "Run Baton only while Claude
+Desktop is open" on and Baton started without its tray icon (headless autostart), Baton used to return only on
+the 10-minute check. It now starts within a few seconds of Claude Desktop opening.
+
 ## 0.2.19
 
 **"Turn it on for me" always says what happened.** Pressing it could end with nothing on screen: Baton threw

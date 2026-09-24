@@ -121,10 +121,10 @@ async function notifyTick() {
 
 // Claude Desktop switches its debugger off whenever it restarts. On Windows, switch it back on as soon as
 // Desktop is up and signed in — no idle wait: the macro puts a 3-2-1 countdown on screen first and takes a
-// few seconds. Exits that clicked nothing (not signed in, session disconnected or locked, Desktop gone:
-// codes 1, 8, 9, 10) are retried every minute; one that clicked and failed backs off ten minutes, and a
+// few seconds (input during the countdown snoozes it). Exits that clicked nothing (not signed in, session
+// disconnected or locked, Desktop gone, you kept typing: codes 1, 8, 9, 10, 12) are retried every minute; one that clicked and failed backs off ten minutes, and a
 // Desktop run gets at most three of those, so a broken menu is never clicked forever.
-const DEBUGGER_WAITING = new Set([1, 8, 9, 10]);
+const DEBUGGER_WAITING = new Set([1, 8, 9, 10, 12]);   // 12: you kept using the computer during the countdown
 let debuggerNext = 0, debuggerTries = 0, debuggerPid = null, lastDebuggerWait = null;
 async function debuggerTick() {
   if (process.platform !== 'win32' || config.get().autoEnableDebugger === false) return;
@@ -167,7 +167,8 @@ const follow = require('./lib/follow').makeFollow({
     try { await sync.transferTick({ exited: true }); } catch (e) { out += '; account-switch transfer failed: ' + e.message; }
     return out;
   },
-  stop: () => shutdown('follow-claude'),
+  // run-daemon.cmd sees this marker and starts Baton again the moment claude.exe reappears.
+  stop: () => { try { fs.writeFileSync(path.join(registry.STATE_DIR, 'follow-sleep.json'), JSON.stringify({ at: new Date().toISOString(), pid: process.pid })); } catch {} shutdown('follow-claude'); },
   log: (m) => orch.log('follow Claude: ' + m),
 });
 
@@ -664,6 +665,7 @@ async function evictWedgedHolder(reason) {
     started = true;
     orch.log(`Baton daemon on http://127.0.0.1:${PORT} (pid ${process.pid})`);
     reportPreviousExit();
+    try { fs.unlinkSync(path.join(registry.STATE_DIR, 'follow-sleep.json')); } catch {}   // awake again
     Promise.resolve(orch.recover())
       .then(r => orch.log(`startup recovery: ${JSON.stringify(r)}`))
       .catch(e => orch.log('startup recovery failed: ' + e.message))

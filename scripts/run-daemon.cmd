@@ -15,6 +15,12 @@ rem
 rem Environment: BATON_NODE (node.exe to use; default: a bundled node.exe, then PATH),
 rem BATON_HOME / BATON_STATE_DIR (data folder), BATON_DAEMON_ENTRY (script to run; tests only),
 rem BATON_STDIO_MAX_BYTES (rotation size; tests only).
+rem
+rem FOLLOW CLAUDE. A daemon that stopped because Claude Desktop closed (Settings > Run Baton only while
+rem Claude Desktop is open) leaves state\follow-sleep.json. This wrapper then waits, checking every 3
+rem seconds, and starts the daemon again as soon as claude.exe appears. That is what brings Baton back
+rem without the tray (headless autostart), instead of the 10-minute watchdog. `baton stop` or the tray's
+rem Quit (stopped-by-user.json) ends the wait.
 
 setlocal
 set "ROOT=%~dp0.."
@@ -33,6 +39,7 @@ if not exist "%STATE%" mkdir "%STATE%"
 rem The 10-minute watchdog passes --watchdog: it must not undo `baton stop` or the tray's Quit.
 if /i "%~1"=="--watchdog" if exist "%STATE%\stopped-by-user.json" exit /b 0
 
+:launch
 if exist "%LOG%" for %%A in ("%LOG%") do if %%~zA GTR %MAX% (
   if exist "%LOG%.1" del /q "%LOG%.1"
   move /y "%LOG%" "%LOG%.1" >nul 2>&1
@@ -42,4 +49,17 @@ echo [%DATE% %TIME%] --- launching %ENTRY% --->> "%LOG%"
 "%NODE%" "%ENTRY%" 2>> "%LOG%"
 set "RC=%ERRORLEVEL%"
 echo [%DATE% %TIME%] --- daemon exited with code %RC% --->> "%LOG%"
-exit /b %RC%
+if not exist "%STATE%\follow-sleep.json" exit /b %RC%
+echo [%DATE% %TIME%] --- asleep until Claude Desktop opens --->> "%LOG%"
+:asleep
+if exist "%STATE%\stopped-by-user.json" (
+  del /q "%STATE%\follow-sleep.json" >nul 2>&1
+  exit /b 0
+)
+"%SystemRoot%\System32\tasklist.exe" /FI "IMAGENAME eq claude.exe" /NH 2>nul | "%SystemRoot%\System32\find.exe" /i "claude.exe" >nul
+if errorlevel 1 (
+  "%SystemRoot%\System32\PING.EXE" -n 4 127.0.0.1 >nul
+  goto asleep
+)
+del /q "%STATE%\follow-sleep.json" >nul 2>&1
+goto launch
