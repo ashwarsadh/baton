@@ -1064,3 +1064,11 @@ html[data-density="compact"] .bcard-acts{margin-top:6px; gap:6px}
 .board-pending span{flex:1; min-width:0}
 .board-pending .bbtn{flex:none; min-height:44px}
 .bq-text{color:var(--txt); font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere}
+
+/* A file the session sent: player / preview / open link */
+.msg.sentfile{display:flex;flex-direction:column;gap:8px}
+.msg.sentfile .sf-cap{color:var(--dim);font-size:13px}
+.msg.sentfile .sf{display:flex;flex-direction:column;gap:6px;min-width:0}
+.msg.sentfile audio,.msg.sentfile video{width:100%;max-width:100%}
+.msg.sentfile img{max-width:100%;max-height:calc(60vh / var(--z,1));border-radius:8px;display:block}
+.msg.sentfile .sf-name{color:var(--accent);word-break:break-all;font-size:13px}

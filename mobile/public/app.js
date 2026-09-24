@@ -534,9 +534,33 @@ function blocks(messages) {
       said.ts = m.ts || said.ts;
     }
     if (theirs) { endTurn(); out.push({ type: 'msg', key: k, html: cached(k, m) }); }
+    // A file the session SENT is the point of the turn, not a step: it gets its own card (player,
+    // preview, open) in the flow instead of hiding inside "Working · N steps".
+    const sent = (m.tools || []).filter(t => t.files && t.files.length);
+    if (sent.length) { endTurn(); sent.forEach((t, i) => out.push({ type: 'msg', key: 'file:' + k + ':' + i, html: sentFileHtml(t) })); }
   });
   endTurn();
   return out;
+}
+
+/* The card for a sent file. Media goes through /api/sent-file, which the auth cookie (or the
+   Cloudflare Access cookie) authenticates, so an <audio>/<video>/<img> src works without a header;
+   the server answers Range, so audio and video seek. Every file also gets an open-in-a-tab link. */
+function sentFileHtml(t) {
+  const sid = state.open || '';
+  let out = '<div class="msg sentfile">';
+  if (t.caption) out += `<div class="sf-cap">${esc(t.caption)}</div>`;
+  for (const f of t.files) {
+    const name = String(f).split(/[\\/]/).pop() || f;
+    const url = '/api/sent-file?session=' + encodeURIComponent(sid) + '&path=' + encodeURIComponent(f);
+    const e = ((name.match(/\.([a-z0-9]+)$/i) || [])[1] || '').toLowerCase();
+    out += '<div class="sf">';
+    if (/^(wav|mp3|ogg|oga|opus|m4a|aac|flac)$/.test(e)) out += `<audio controls preload="metadata" src="${esc(url)}"></audio>`;
+    else if (/^(mp4|webm|mov)$/.test(e)) out += `<video controls playsinline preload="metadata" src="${esc(url)}"></video>`;
+    else if (/^(png|jpe?g|gif|webp|svg)$/.test(e)) out += `<a href="${esc(url)}" target="_blank" rel="noopener"><img loading="lazy" alt="${esc(name)}" src="${esc(url)}"></a>`;
+    out += `<a class="sf-name" href="${esc(url)}" target="_blank" rel="noopener">\ud83d\udcce ${esc(name)}</a></div>`;
+  }
+  return out + '</div>';
 }
 
 function cached(k, m) {

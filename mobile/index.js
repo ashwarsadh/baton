@@ -19,6 +19,7 @@ const { answerQuestion } = require('./answer');
 const { readRunningTasks, stopRunningTask } = require('./tasks');
 const { pasteFiles } = require('./attach');
 const { readFile } = require('./files');
+const sentfiles = require('./sentfiles');   // files a session sent with SendUserFile
 const { readSuggestion } = require('./suggest');
 const config = require('../lib/config');
 const tunnel = require('../lib/tunnel');
@@ -753,7 +754,7 @@ async function handle(req, res) {
   if (!p.startsWith('/api/')) return serveStatic(res, p, url.searchParams);
 
   if (isSubuser(identity)) {
-    const READ_OK = p === '/api/bootstrap' || p === '/api/sessions' || p === '/api/file' || p === '/api/tier' ||
+    const READ_OK = p === '/api/bootstrap' || p === '/api/sessions' || p === '/api/file' || p === '/api/sent-file' || p === '/api/tier' ||
                     p === '/api/permission' || p === '/api/build' || p === '/api/stream';
     const WRITE_OK = req.method === 'POST' && (
       p === '/api/send' || p === '/api/model' || p === '/api/effort' ||
@@ -833,6 +834,27 @@ async function handle(req, res) {
       : [...new Set(sessions.index().list.map(x => x.cwd).filter(Boolean))].concat([UPLOADS]);
     const out = readFile(url.searchParams.get('path'), { roots, cwd: sess && sess.cwd });
     return json(res, out.ok ? 200 : 404, out);
+  }
+
+  // Stream a file the session SENT (SendUserFile): audio/video with Range, images, pdf, html.
+  // The allowlist is the session's own transcript, so this reaches nothing the session did not hand
+  // the user; a sub-user additionally needs the session granted, exactly as /api/file.
+  if (p === '/api/sent-file') {
+    const sid = url.searchParams.get('session');
+    const want = url.searchParams.get('path');
+    if (!sid || !want) return json(res, 400, { ok: false, error: 'session and path required' });
+    if (isSubuser(identity) && !identity.sessions.has(sid)) {
+      return json(res, 403, { ok: false, error: 'NOT_GRANTED', message: 'That session is not shared with you.' });
+    }
+    await sessions.refresh();
+    const tr = sessions.transcriptPath(sessions.get(sid));
+    if (!tr) return json(res, 404, { ok: false, error: 'NO_TRANSCRIPT' });
+    const sent = await sentfiles.sentFiles(tr);
+    const file = sentfiles.norm(want);
+    if (!sent.has(file)) return json(res, 403, { ok: false, error: 'NOT_SENT', message: 'This session did not send that file.' });
+    let st; try { st = await fs.promises.stat(file); } catch { st = null; }
+    if (!st || !st.isFile()) return json(res, 404, { ok: false, error: 'GONE', message: 'The file is no longer on the desktop.' });
+    return sentfiles.stream(req, res, file, st.size);
   }
 
   if (p === '/api/permission') {

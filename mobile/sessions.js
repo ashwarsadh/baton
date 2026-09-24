@@ -401,6 +401,13 @@ function flatten(row) {
       else if (b.type === 'tool_use') {
         out.tools.push({ id: b.id || null, name: b.name, input: clip(JSON.stringify(b.input || {}), 600),
                          label: stepLabel(b.name, b.input) });
+        // A file handed to the user is shown as a player/preview, so its paths travel whole: the
+        // clipped input above can cut a long caption's file list in half.
+        if (/SendUserFile$/.test(b.name || '') && b.input && Array.isArray(b.input.files)) {
+          const t = out.tools[out.tools.length - 1];
+          t.files = b.input.files.filter(f => typeof f === 'string').slice(0, 20);
+          t.caption = typeof b.input.caption === 'string' ? clip(b.input.caption, 600) : '';
+        }
       }
     }
     out.text = clip(out.text, SPOKEN_LIMIT);

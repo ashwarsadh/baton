@@ -1,5 +1,12 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.17
+
+**Files a session sends you open in the app.** When a session hands you a file (Claude Code's SendUserFile), the
+chat now shows it as its own card: audio and video play and seek in place, images show inline, and every file has a
+link that opens it in a new tab. Before, the file usually sat outside the project folder, so Baton could not open it,
+and the send was hidden inside the "Working" steps. Only files the session actually sent can be opened this way.
+
 ## 0.2.16
 
 **The message you are reading stays put.** In a long conversation, after you scrolled up far enough to load older
