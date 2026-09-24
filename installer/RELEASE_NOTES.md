@@ -1,5 +1,11 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.23
+
+**Every spawn starts on the model and effort you chose.** A worker started with no model or effort now takes Settings › New session, the same default the phone uses. The Conductor protocol tells it to set model and effort before every wake or spawn; ops lanes may go lower.
+
+**General teachings ship with Baton.** Rules that fit anyone (finish the task, clean up, never tune a figure to sit under a threshold, a check must be able to fail) now come in the box and are read with baton_protocol "teachings". Your own teachings file stays on your machine and is never shipped.
+
 ## 0.2.22
 
 **Only the keyboard pauses the debugger countdown, and only on the last second.** Moving or clicking the mouse never pauses it. A key pressed while the bar shows "1" snoozes it until the keyboard has been quiet for 5 seconds; keys pressed on "3" or "2" are ignored.

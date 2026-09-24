@@ -62,7 +62,13 @@ check(/USER APPROVED/.test(SD[7]) && /live children/.test(SD[7]), 'master SD8: a
 check(/LAST WARM CYCLE/.test(SD[17]) && /COLD/.test(SD[17]), 'master SD18: compact only in the last warm cycle, never cold');
 check(/baton_wakes/.test(SD[18]), 'master SD19: warm-cache check before a send');
 check(/Conductor is the one exception/.test(mp.PROTOCOL.hardRules[0]), 'master hard rule 1 names the Conductor exception');
-const everything = [detail, mp.protocolText(), mp.conductorReportLine('local_x'), require('../hooks/finish-the-task').DEFAULT_REASON].join('\n')
+// g549: the general teachings ship; the user's own file never does, and spawns default to Settings › New session.
+const gen = mp.protocolSection('teachings');
+check(gen && /before EVERY wake or spawn/.test(gen) && /Never tune a figure/.test(gen), 'the shipped general teachings are served by baton_protocol "teachings"');
+check(!path.resolve(mp.teachingsPath()).startsWith(path.resolve(__dirname, '..') + path.sep), "the user's own teachings file lives outside the install, so it is never shipped");
+check(/forceModel: body\.model \|\| ns\.model \|\| undefined, forceEffort: body\.effort \|\| ns\.effort \|\| undefined/.test(fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8')), 'baton_spawn defaults model and effort to Settings › New session');
+check(/BEFORE EVERY WAKE OR SPAWN/.test(compact), 'the Conductor protocol says to set model and effort before every wake or spawn');
+const everything = [detail, gen, mp.protocolText(), mp.conductorReportLine('local_x'), require('../hooks/finish-the-task').DEFAULT_REASON].join('\n')
   .split(mp.teachingsPath()).join('<teachings>');   // the temp data dir can carry the local user name
 const personal = everything.match(/\b(ashwar|sanjay|kkfe|kkfashion|kkvps|vps2|tailscale|gst|tds|tally|memento|fedex|whatsapp|buyer|invoice|agfree)\b|100\.\d+\.\d+\.\d+|Documents of KKFE/i);
 check(!personal, 'no personal names, hosts or business words in any protocol text', personal ? 'found: ' + personal[0] : '');

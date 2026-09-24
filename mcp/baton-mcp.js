@@ -420,7 +420,7 @@ const TOOLS = [
   },
   {
     name: 'baton_protocol',
-    description: 'Read an operating protocol, or one of the Conductor\'s on-demand lesson blocks. Activation hands the Conductor a COMPACT protocol; the long, distilled lessons stay here so they cost nothing until needed. section: "conductor" (the compact protocol, default) · "master" · "all" (conductor + every block) · "playbook" · "verification" · "relaying" · "retractions" · "diagnosis" · "holds". Safe for any session; reading changes nothing.',
+    description: 'Read an operating protocol, or one of the Conductor\'s on-demand lesson blocks. Activation hands the Conductor a COMPACT protocol; the long, distilled lessons stay here so they cost nothing until needed. section: "conductor" (the compact protocol, default) · "master" · "all" (conductor + every block) · "playbook" · "verification" · "relaying" · "retractions" · "diagnosis" · "holds" · "teachings" (the general teachings that ship with Baton). Safe for any session; reading changes nothing.',
     inputSchema: { type: 'object', properties: { section: { type: 'string', description: 'Which section. Default "conductor".' } } },
     slaveSafe: true,
     handler: async (a) => {

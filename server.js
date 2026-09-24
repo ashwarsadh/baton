@@ -448,9 +448,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && u.pathname === '/api/task') {
       const body = JSON.parse(await readBody(req) || '{}');
       if (!body.prompt) return json(res, 400, { ok: false, error: 'prompt required' });
+      // Settings › New session is the default for every spawn: nothing starts on a model or effort nobody chose.
+      const ns = config.get().newSession || {};
       const t = orch.enqueue(body.prompt, {
         title: body.title, cwd: body.cwd, tags: body.tags,
-        forceModel: body.model, forceEffort: body.effort,
+        forceModel: body.model || ns.model || undefined, forceEffort: body.effort || ns.effort || undefined,
         isolate: body.isolate, noReuse: body.noReuse, dependsOn: body.dependsOn,
         dispatch: body.dispatch,
         masterId: body.masterId || null,
