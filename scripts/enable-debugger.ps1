@@ -141,15 +141,21 @@ try {
   while ($true) {
     $base = [N]::LastInput(); $busy = $false; $p0 = [System.Windows.Forms.Cursor]::Position
     for ($i = $Countdown; $i -ge 1 -and -not $busy; $i--) {
-      Say ("Baton: turning on Claude's debugger in $i" + $(if ($i -gt 1) { '...' } else { ' - hands off the mouse' })) $WHITE
+      Say ("Baton: turning on Claude's debugger in $i" + $(if ($i -gt 1) { '...' } else { ' - hands off the keyboard' })) $WHITE
       $t = [Environment]::TickCount
       while ([Environment]::TickCount - $t -lt 1000) {
         [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 50
-        if ([N]::LastInput() -ne $base) { $busy = $true; $why = InputKind $p0; break }
+        # g546: only the KEYBOARD snoozes, and only in the last second ("1"). The mouse never does.
+        $now = [N]::LastInput()
+        if ($now -ne $base) {
+          $kind = InputKind $p0
+          if ($i -eq 1 -and $kind -eq 'key pressed') { $busy = $true; $why = $kind; break }
+          $base = $now; $p0 = [System.Windows.Forms.Cursor]::Position
+        }
       }
     }
     if (-not $busy) { break }
-    # You touched the mouse or keyboard: wait until you have been still for SnoozeMs, then count again.
+    # You typed during the "1": wait until the keyboard has been quiet for SnoozeMs, then count again.
     if (-not $snoozeStart) { $snoozeStart = [Environment]::TickCount }
     $script:snoozes++
     Log ("snoozed - " + $why + " during the countdown (snooze " + $script:snoozes + ")")
@@ -159,7 +165,7 @@ try {
       $left = [Math]::Ceiling(($SnoozeMs - ([Environment]::TickCount - $quiet)) / 1000)
       Say ("Baton: snoozed - " + $why + ". Trying again in ${left}s") $WHITE
       [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100
-      $now = [N]::LastInput(); if ($now -ne $last) { $why = InputKind $p0; $p0 = [System.Windows.Forms.Cursor]::Position; $last = $now; $quiet = [Environment]::TickCount }
+      $now = [N]::LastInput(); if ($now -ne $last) { if ((InputKind $p0) -eq 'key pressed') { $quiet = [Environment]::TickCount }; $p0 = [System.Windows.Forms.Cursor]::Position; $last = $now }
     }
   }
   Say "Baton: turning on Claude's debugger..." $WHITE

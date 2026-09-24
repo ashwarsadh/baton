@@ -1,5 +1,9 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.22
+
+**Only the keyboard pauses the debugger countdown, and only on the last second.** Moving or clicking the mouse never pauses it. A key pressed while the bar shows "1" snoozes it until the keyboard has been quiet for 5 seconds; keys pressed on "3" or "2" are ignored.
+
 ## 0.2.21
 
 **The debugger countdown says why it paused, and sits at the top of the screen.** When you move the mouse, click
