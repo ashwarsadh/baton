@@ -51,6 +51,11 @@ function Health {
   return $null
 }
 function Healthy { return [bool](Health) }
+# followClaude (Settings): Baton runs only while Claude Desktop does. The tray starts it when claude.exe
+# appears; the daemon stops itself after Desktop exits (and after its account sync).
+function FollowClaude { try { return ((Get-Content (Join-Path $Data 'settings.json') -Raw | ConvertFrom-Json).followClaude -eq $true) } catch { return $false } }
+function ClaudeUp { return [bool](Get-Process -Name claude -ErrorAction SilentlyContinue) }
+function Wanted { return (-not (FollowClaude)) -or (ClaudeUp) }
 function StartDaemon {
   if (Healthy) { return }
   if (StoppedByUser) { return }
@@ -100,13 +105,14 @@ $icon.add_MouseDoubleClick({ OpenApp '' })
 $icon.add_BalloonTipClicked({ OpenApp '#desktop' })
 $script:warned = $false
 
-StartDaemon
+if (Wanted) { StartDaemon }
 
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 20000
 $timer.add_Tick({
   $h = Health
   if (-not $h -and (StoppedByUser)) { $status.Text = 'Baton is stopped (Restart Baton to start it)'; $icon.Text = 'Baton - stopped'; $fix.Visible = $false; return }
+  if (-not $h -and -not (Wanted)) { $status.Text = 'Baton is asleep - it starts when Claude Desktop opens'; $icon.Text = 'Baton - waiting for Claude Desktop'; $fix.Visible = $false; return }
   if (-not $h) { $status.Text = 'Baton stopped - restarting'; $icon.Text = 'Baton - restarting'; $fix.Visible = $false; StartDaemon; return }
   if ($h.cdp -eq $false) {
     $status.Text = 'Claude Desktop not connected'; $icon.Text = 'Baton - Claude Desktop not connected'; $fix.Visible = $true
@@ -119,6 +125,17 @@ $timer.add_Tick({
   }
 })
 $timer.Start()
-$status.Text = 'Baton is running'
+# Start within seconds of Claude Desktop opening, not on the next 20-second health poll.
+$script:wasUp = $false
+$follow = New-Object System.Windows.Forms.Timer
+$follow.Interval = 3000
+$follow.add_Tick({
+  if (-not (FollowClaude)) { return }
+  $up = ClaudeUp
+  if ($up -and -not $script:wasUp -and -not (StoppedByUser)) { StartDaemon; $status.Text = 'Baton is running'; $icon.Text = 'Baton - running' }
+  $script:wasUp = $up
+})
+$follow.Start()
+$status.Text = $(if (Wanted) { 'Baton is running' } else { 'Baton is asleep - it starts when Claude Desktop opens' })
 
 [System.Windows.Forms.Application]::Run()

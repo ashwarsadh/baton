@@ -100,7 +100,7 @@ look at the *Claude Desktop debugger* line. If it is ✘:
 4. Run `baton status` again until the debugger line is ✔.
 
 The debugger turns itself off whenever Claude Desktop restarts. On Windows Baton re-enables it automatically
-while the person is away from the keyboard; on macOS they repeat step 3 after a restart. Tell them this.
+once Claude Desktop is signed in, after a 3-2-1 countdown on screen; on macOS they repeat step 3 after a restart. Tell them this.
 
 ## 6. Choose how the phone reaches the computer — ASK
 

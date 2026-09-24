@@ -1,16 +1,29 @@
-param([switch]$Force, [int]$Port = 9229)
+param([switch]$Force, [int]$Port = 9229, [int]$Countdown = 3, [switch]$DryRun)
 # enable-debugger.ps1 - switch on Claude Desktop's main-process debugger for Baton (Windows).
 #
 # Clicks Menu > Developer > Enable Main Process Debugger in the Claude Desktop window through UI
 # Automation, then dismisses the confirmation dialog. Developer mode must be on in Claude Desktop
-# (Help > Troubleshooting > Enable Developer Mode). The window is raised only if its accessibility
-# tree is not available, and focus is handed back to whatever you were using afterwards.
-# Exit code 0 = debugger listening. It must run in your interactive desktop session.
+# (Help > Troubleshooting > Enable Developer Mode). A small click-through bar on screen counts down
+# ("Baton: turning on Claude's debugger in 3, 2, 1") and then shows the result.
+#
+# The window keeps its size: a maximised or normal window is only brought to the front, never restored
+# or resized; a minimised one is restored to its last state and minimised again afterwards. Focus goes
+# back to whatever you were using.
+#
+# Exit codes (lib/heal.js DEBUGGER_REASONS turns each into a sentence for the app):
+#   0 debugger listening           1 Claude Desktop not running    2 Menu button not found
+#   3 Developer menu missing       4 menu item missing             5 port never opened
+#   6 debugger stopped again       7 window could not be raised    8 Windows session disconnected
+#   9 Windows session locked       10 Claude Desktop not signed in
+# -DryRun walks every step up to the menu item, lists the Developer menu and closes it without clicking.
+# It must run in your interactive desktop session: Windows does not deliver simulated clicks to a
+# disconnected or locked session, so 8 and 9 are checked first rather than clicking into nothing.
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName System.Windows.Forms
-Add-Type @"
-using System; using System.Runtime.InteropServices;
+Add-Type -AssemblyName System.Drawing
+Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing @"
+using System; using System.Runtime.InteropServices; using System.Windows.Forms; using System.Drawing;
 public class N {
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
@@ -22,87 +35,151 @@ public class N {
   [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, IntPtr e);
+  [DllImport("user32.dll")] public static extern IntPtr OpenInputDesktop(uint f, bool i, uint a);
+  [DllImport("user32.dll")] public static extern bool CloseDesktop(IntPtr h);
+  [DllImport("wtsapi32.dll")] public static extern bool WTSQuerySessionInformation(IntPtr s, int id, int cls, out IntPtr buf, out int bytes);
+  [DllImport("wtsapi32.dll")] public static extern void WTSFreeMemory(IntPtr p);
   public const uint LEFTDOWN=0x02, LEFTUP=0x04;
+  // WTSConnectState of this session: 0 = active, 4 = disconnected (Remote Desktop closed), -1 = unknown.
+  public static int ConnState() { IntPtr b; int n; if (!WTSQuerySessionInformation(IntPtr.Zero, -1, 8, out b, out n)) return -1; int v = Marshal.ReadInt32(b); WTSFreeMemory(b); return v; }
+  // The input desktop cannot be opened while the lock screen (or any secure desktop) is showing.
+  public static bool InputDesktop() { IntPtr d = OpenInputDesktop(0, false, 0x0100); if (d == IntPtr.Zero) return false; CloseDesktop(d); return true; }
+}
+public class BatonBar : Form {
+  Label l;
+  public BatonBar() {
+    FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true; StartPosition = FormStartPosition.Manual;
+    BackColor = Color.FromArgb(28, 28, 32); Opacity = 0.94; Width = 520; Height = 58;
+    l = new Label(); l.Dock = DockStyle.Fill; l.ForeColor = Color.White; l.Font = new Font("Segoe UI", 12.5f);
+    l.TextAlign = ContentAlignment.MiddleCenter; Controls.Add(l);
+  }
+  protected override bool ShowWithoutActivation { get { return true; } }
+  // no-activate, tool window (no taskbar/alt-tab), click-through, topmost
+  protected override CreateParams CreateParams { get { CreateParams cp = base.CreateParams; cp.ExStyle |= 0x08000000 | 0x80 | 0x20 | 0x08; return cp; } }
+  public void Say(string s, Color c) { l.Text = s; l.ForeColor = c; Refresh(); Application.DoEvents(); }
 }
 "@
 $ErrorActionPreference = 'Stop'
 $UIA = [System.Windows.Automation.AutomationElement]; $root = $UIA::RootElement
 $DESC = [System.Windows.Automation.TreeScope]::Descendants
+$WHITE = [System.Drawing.Color]::White; $GREEN = [System.Drawing.Color]::FromArgb(110, 220, 140); $RED = [System.Drawing.Color]::FromArgb(255, 130, 120)
 function Log($m) { Write-Host ("[{0}] {1}" -f (Get-Date -f HH:mm:ss), $m) }
 function IsUp { [bool](netstat -ano | Select-String "127.0.0.1:$Port" | Select-String "LISTENING") }
 function Find($name) { $c = New-Object System.Windows.Automation.PropertyCondition($UIA::NameProperty, $name); try { return $root.FindFirst($DESC, $c) } catch { return $null } }
+function WaitFind($name, [int]$ms) { $t = [Environment]::TickCount; do { $e = Find $name; if ($e) { return $e }; Start-Sleep -Milliseconds 80 } while ([Environment]::TickCount - $t -lt $ms); return $null }
 function Center($el) { $r = $el.Current.BoundingRectangle; return @([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2)) }
 function MoveTo($el) { $p = Center $el; [void][N]::SetCursorPos($p[0], $p[1]) }
-function RealClick($el) { $p = Center $el; [void][N]::SetCursorPos($p[0], $p[1]); Start-Sleep -Milliseconds 120; [N]::mouse_event([N]::LEFTDOWN, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 60; [N]::mouse_event([N]::LEFTUP, 0, 0, 0, [IntPtr]::Zero) }
+function RealClick($el) { $p = Center $el; [void][N]::SetCursorPos($p[0], $p[1]); Start-Sleep -Milliseconds 40; [N]::mouse_event([N]::LEFTDOWN, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 30; [N]::mouse_event([N]::LEFTUP, 0, 0, 0, [IntPtr]::Zero) }
+function Say($m, $c) { if ($script:bar) { try { $script:bar.Say($m, $c) } catch {} } }
 
-function Finish([int]$code) {
+function Finish([int]$code, [string]$msg) {
+  Log $msg
+  if ($code -ne 0 -and $script:menuOpen) { try { [System.Windows.Forms.SendKeys]::SendWait('{ESC}{ESC}') } catch {} }
   try {
     if ($script:tgt) { [void][N]::AttachThreadInput($script:my, $script:tgt, $false) }
     if ($script:fg) { [void][N]::AttachThreadInput($script:my, $script:fg, $false) }
+    if ($script:wasMinimized) { [void][N]::ShowWindow($script:h, 7) }   # SW_SHOWMINNOACTIVE: back to how it was
     if ($script:prevFgWin -and $script:prevFgWin -ne [IntPtr]::Zero -and $script:prevFgWin -ne $script:h) {
       [void][N]::SetForegroundWindow($script:prevFgWin)
     }
   } catch {}
+  if ($script:bar) {
+    if ($code -eq 0) { Say "Baton: Claude's debugger is on" $GREEN } else { Say ("Baton could not turn the debugger on: " + $msg) $RED }
+    $t = [Environment]::TickCount; while ([Environment]::TickCount - $t -lt 1800) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 50 }
+    try { $script:bar.Close() } catch {}
+  }
   exit $code
 }
 
-if ((IsUp) -and (-not $Force)) { Log 'debugger already on'; exit 0 }
+if ((IsUp) -and (-not $Force) -and (-not $DryRun)) { Log 'debugger already on'; exit 0 }
+$cs = [N]::ConnState()
+if ($cs -eq 4) { Finish 8 'the Windows session is disconnected (Remote Desktop closed), and Windows does not deliver clicks to it' }
+if (-not [N]::InputDesktop()) { Finish 9 'Windows is locked, and Windows does not deliver clicks behind the lock screen' }
 $cl = Get-Process -Name claude -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-if (-not $cl) { Log 'Claude Desktop is not running (or has no window)'; exit 1 }
+if (-not $cl) { Finish 1 'Claude Desktop is not running (or has no window)' }
 $h = $cl.MainWindowHandle; $script:h = $h
+
+# The debugger item does nothing before Claude Desktop has signed in and finished starting.
+$signedIn = $false
+try {
+  $cfg = Get-Content (Join-Path $env:APPDATA 'Claude\config.json') -Raw | ConvertFrom-Json
+  $signedIn = [bool]($cfg.'oauth:tokenCacheV2' -or $cfg.'oauth:tokenCache')
+} catch {}
+if (-not $signedIn) { Finish 10 'Claude Desktop is not signed in yet' }
+try { $age = ((Get-Date) - $cl.StartTime).TotalSeconds; if ($age -lt 20) { Start-Sleep -Milliseconds ([int]((20 - $age) * 1000)) } } catch {}
+
+# The on-screen countdown, bottom centre of the screen Claude Desktop is on. It never takes focus
+# and clicks pass through it.
+try {
+  $script:bar = New-Object BatonBar
+  $wa = [System.Windows.Forms.Screen]::FromHandle($h).WorkingArea
+  $script:bar.Left = [int]($wa.Left + ($wa.Width - $script:bar.Width) / 2); $script:bar.Top = [int]($wa.Bottom - $script:bar.Height - 40)
+  $script:bar.Show()
+  for ($i = $Countdown; $i -ge 1; $i--) {
+    Say ("Baton: turning on Claude's debugger in $i" + $(if ($i -gt 1) { '...' } else { ' - hands off the mouse' })) $WHITE
+    $t = [Environment]::TickCount; while ([Environment]::TickCount - $t -lt 1000) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 50 }
+  }
+  Say "Baton: turning on Claude's debugger..." $WHITE
+} catch { Log ("countdown bar unavailable: " + $_.Exception.Message); $script:bar = $null }
+if ((IsUp) -and (-not $DryRun)) { Finish 0 "debugger on (port $Port)" }
 
 $script:my = [N]::GetCurrentThreadId()
 $script:prevFgWin = [N]::GetForegroundWindow()
-$wasMinimized = [N]::IsIconic($h)
+$script:wasMinimized = [N]::IsIconic($h)
 
-# Chromium only builds its accessibility tree for a foreground window; use it in place if it exists.
-$root = [System.Windows.Automation.AutomationElement]::FromHandle($h)
-$probe = $null
-if ($root) { $probe = $root.FindFirst($DESC, (New-Object System.Windows.Automation.PropertyCondition($UIA::NameProperty, 'Menu'))) }
-
-$raised = $false
-if ($probe) {
-  $raised = $true
-  $script:prevFgWin = [IntPtr]::Zero
-} else {
+# The clicks are real mouse clicks at the element's position, so Claude Desktop must be the top
+# window. Bring it forward WITHOUT resizing: only a minimised window is restored (to its last state).
+if ([N]::GetForegroundWindow() -ne $h) {
   $script:fg = [N]::GetWindowThreadProcessId($script:prevFgWin, [IntPtr]::Zero)
   $script:tgt = [N]::GetWindowThreadProcessId($h, [IntPtr]::Zero)
   [void][N]::AttachThreadInput($script:my, $script:fg, $true)
   [void][N]::AttachThreadInput($script:my, $script:tgt, $true)
-  for ($i = 0; $i -lt 5; $i++) {
-    if ($wasMinimized) { [void][N]::ShowWindow($h, 9) } else { [void][N]::ShowWindow($h, 4) }
+  $raised = $false
+  for ($i = 0; $i -lt 10; $i++) {
+    if ([N]::IsIconic($h)) { [void][N]::ShowWindow($h, 9) }   # SW_RESTORE on a minimised window returns it to maximised or normal as it was
     [void][N]::BringWindowToTop($h)
     [void][N]::SetForegroundWindow($h)
-    Start-Sleep -Milliseconds 700
+    Start-Sleep -Milliseconds 120
     if ([N]::GetForegroundWindow() -eq $h) { $raised = $true; break }
   }
+  if (-not $raised) { Finish 7 'Windows would not let Baton bring Claude Desktop to the front' }
 }
-if (-not $raised) { Log 'could not bring Claude Desktop to the foreground'; Finish 7 }
-Start-Sleep -Milliseconds 1200
+$root = [System.Windows.Automation.AutomationElement]::FromHandle($h)
 
-$menu = Find 'Menu'
-if (-not $menu) { Log 'Menu not found (accessibility tree not built)'; Finish 2 }
-RealClick $menu; Start-Sleep -Milliseconds 1200
+$menu = WaitFind 'Menu' 4000
+if (-not $menu) { Finish 2 "Claude Desktop's Menu button was not found (its window was not ready)" }
+RealClick $menu; $script:menuOpen = $true
 
-$dev = Find 'Developer'
-if (-not $dev) { Log 'Developer menu not found - turn on Help > Troubleshooting > Enable Developer Mode first'; Finish 3 }
-MoveTo $dev; Start-Sleep -Milliseconds 1300   # a submenu opens on hover, not on click
+$dev = WaitFind 'Developer' 3000
+if (-not $dev) { Finish 3 'the Developer menu is missing - turn on Developer Mode (Help > Troubleshooting) and restart Claude Desktop' }
+MoveTo $dev   # a submenu opens on hover, not on click
 
-$dbg = Find 'Enable Main Process Debugger'
-if (-not $dbg) { Log 'Enable Main Process Debugger not found'; Finish 4 }
-RealClick $dbg; Start-Sleep -Milliseconds 1600
+$dbg = WaitFind 'Enable Main Process Debugger' 3000
+if ($DryRun) {
+  $names = @($root.FindAll($DESC, (New-Object System.Windows.Automation.PropertyCondition($UIA::ControlTypeProperty, [System.Windows.Automation.ControlType]::MenuItem))) | ForEach-Object { $_.Current.Name }) -join ' | '
+  Log ('menu items: ' + $names)
+  if ($dbg) { Finish 11 'dry run: every step reached the menu item, nothing clicked' } else { Finish 4 'the Enable Main Process Debugger item was not in the Developer menu' }
+}
+if (-not $dbg) { Finish 4 'the Enable Main Process Debugger item was not in the Developer menu' }
+RealClick $dbg; $script:menuOpen = $false
 
 $up = $false
-for ($i = 0; $i -lt 25; $i++) { Start-Sleep -Milliseconds 300; if (IsUp) { $up = $true; break } }
-if (-not $up) { Log "debugger did not start on port $Port"; Finish 5 }
+for ($i = 0; $i -lt 80; $i++) { if (IsUp) { $up = $true; break }; Start-Sleep -Milliseconds 100 }
+if (-not $up) { Finish 5 "the menu item was clicked but nothing started listening on port $Port" }
 
-# Enabling also shows a modal "Inspector" dialog; its default button is OK.
-Start-Sleep -Milliseconds 700
-$ok = Find 'OK'
-if ($ok -and $ok.Current.ControlType.ProgrammaticName -match 'Button') { RealClick $ok }
-else { try { [System.Windows.Forms.SendKeys]::SendWait('{ENTER}') } catch {} }
-Start-Sleep -Milliseconds 700
+# Enabling also shows a modal "Inspector" dialog (its own top-level window); its default button is OK.
+$root = $UIA::RootElement
+$ok = $null; $t = [Environment]::TickCount
+do {
+  foreach ($w in $root.FindAll([System.Windows.Automation.TreeScope]::Children, (New-Object System.Windows.Automation.PropertyCondition($UIA::ProcessIdProperty, $cl.Id)))) {
+    if ($w.Current.NativeWindowHandle -eq [int]$h) { continue }
+    $ok = $w.FindFirst($DESC, (New-Object System.Windows.Automation.PropertyCondition($UIA::NameProperty, 'OK')))
+    if ($ok) { break }
+  }
+  if ($ok) { break }; Start-Sleep -Milliseconds 80
+} while ([Environment]::TickCount - $t -lt 2000)
+if ($ok) { RealClick $ok } else { try { [System.Windows.Forms.SendKeys]::SendWait('{ENTER}') } catch {} }
+Start-Sleep -Milliseconds 300
 
-if (IsUp) { Log "debugger on (port $Port)"; Finish 0 }
-Log 'debugger stopped again'
-Finish 6
+if (IsUp) { Finish 0 "debugger on (port $Port)" }
+Finish 6 'the debugger started and then stopped again'

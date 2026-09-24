@@ -1,5 +1,23 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.19
+
+**"Turn it on for me" always says what happened.** Pressing it could end with nothing on screen: Baton threw
+away the reason the switch-on failed. It now always ends with a result or a plain reason, kept on the card, for
+example that Claude Desktop is not signed in, or that Windows blocked the clicks because the computer is locked
+or its Remote Desktop session is closed. Windows does not deliver simulated clicks to a locked or disconnected
+session. With no answer after 90 seconds, the button says so.
+
+**The debugger comes back on by itself, fast, and without touching the window size.** After Claude Desktop starts
+and you are signed in, Baton shows a small bar at the bottom of the screen ("Baton: turning on Claude's debugger
+in 3, 2, 1"), then switches it on in a few seconds. It no longer waits for you to be away from the keyboard. A
+maximised Claude window stays maximised; before, it could be restored to a smaller size.
+
+**Run Baton only while Claude Desktop is open** (Settings › Advanced, off by default). With the tray icon, Baton
+starts within seconds of Claude Desktop opening. When Desktop exits, Baton runs the account sync if it is on
+(that is the only time every account can be written), then stops. It waits for running Baton tasks first, and it
+stays up if Desktop reopens during the sync.
+
 ## 0.2.18
 
 **Markdown and text files a session sends open in Baton.** Tapping a sent `.md` file opens it in Baton's file
@@ -179,7 +197,7 @@ You also need **Claude Desktop**, installed and signed in: https://claude.ai/dow
 2. Leave both boxes on the last page ticked:
    - **Start Baton when I sign in** starts Baton and its tray icon when you log in.
    - **Run first-time setup** checks Claude Desktop, turns on its **Developer Mode** and **main-process debugger** (Baton needs the debugger to send messages and resume sessions), registers Baton's tools with Claude Code, and opens Baton.
-3. If setup had to turn Developer Mode on, quit Claude Desktop (tray icon › Quit) and open it again. Baton then switches the debugger on by itself the next time you are away from the keyboard. You can also run **Baton — Status** from the Start menu, or `baton debugger`.
+3. If setup had to turn Developer Mode on, quit Claude Desktop (tray icon › Quit) and open it again. Baton then switches the debugger on by itself once you are signed in, after a 3-2-1 countdown on screen. You can also run **Baton — Status** from the Start menu, or `baton debugger`.
 4. To connect your phone, use **Start menu › Baton — Pair a phone** and scan the QR code.
 
 The installer adds a `baton` command to your PATH (open a new terminal to use it). Uninstall from **Settings › Apps**. Uninstalling stops Baton and removes its autostart and its Claude Code tool registration. It keeps your settings and pairing key in `%USERPROFILE%\.baton`; delete that folder yourself if you no longer want them.

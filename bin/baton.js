@@ -174,7 +174,7 @@ async function setup() {
   await doctor();
   if (!(await cdpUp()) && devMode(true) === 'changed') {
     console.log(C.y('\nTurned on Claude Desktop Developer Mode. Quit Claude Desktop (tray icon › Quit) and open it again, then run `baton debugger`' +
-      (WIN ? ' — or just leave it: Baton switches the debugger on by itself once you are away from the keyboard.' : '.')));
+      (WIN ? ' — or just leave it: Baton switches the debugger on by itself once Claude Desktop is signed in (a 3-2-1 countdown shows on screen first).' : '.')));
   } else if (!(await cdpUp()) && WIN) {
     console.log(C.y('\nTrying to switch on the Claude Desktop debugger for you (Claude will come to the front briefly)…'));
     spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'scripts', 'enable-debugger.ps1')], { stdio: 'inherit', windowsHide: true });

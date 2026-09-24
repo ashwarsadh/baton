@@ -119,21 +119,57 @@ async function notifyTick() {
   if (lastNotify && lastNotify.delivered) orch.log(`notify: delivered ${lastNotify.delivered} batch(es) ${JSON.stringify(lastNotify.batches || [])}`);
 }
 
-// Claude Desktop switches its debugger off whenever it restarts. On Windows, switch it back on —
-// only while the user is away from the keyboard, and at most once every ten minutes.
-let lastDebuggerRepair = 0;
+// Claude Desktop switches its debugger off whenever it restarts. On Windows, switch it back on as soon as
+// Desktop is up and signed in — no idle wait: the macro puts a 3-2-1 countdown on screen first and takes a
+// few seconds. Exits that clicked nothing (not signed in, session disconnected or locked, Desktop gone:
+// codes 1, 8, 9, 10) are retried every minute; one that clicked and failed backs off ten minutes, and a
+// Desktop run gets at most three of those, so a broken menu is never clicked forever.
+const DEBUGGER_WAITING = new Set([1, 8, 9, 10]);
+let debuggerNext = 0, debuggerTries = 0, debuggerPid = null, lastDebuggerWait = null;
 async function debuggerTick() {
   if (process.platform !== 'win32' || config.get().autoEnableDebugger === false) return;
-  if (lastCdpOk !== false || Date.now() - lastDebuggerRepair < 10 * 60000) return;
-  if (!require('./lib/idle').isIdle(Math.max(idleMinMs(), 30000))) return;
-  const running = await new Promise(r => execFile('tasklist', ['/FI', 'IMAGENAME eq claude.exe', '/NH'], { windowsHide: true },
-    (e, out) => r(!e && /claude\.exe/i.test(String(out)))));
-  if (!running) return;
-  lastDebuggerRepair = Date.now();
-  const log = [];
-  const ok = await heal.repairCdp(log).catch(e => { log.push(e.message); return false; });
-  orch.log('debugger auto-enable: ' + (ok ? 'on again' : 'failed') + ' — ' + log.join('; '));
+  if (lastCdpOk !== false || Date.now() < debuggerNext) return;
+  const pid = await new Promise(r => execFile('tasklist', ['/FI', 'IMAGENAME eq claude.exe', '/NH', '/FO', 'CSV'], { windowsHide: true },
+    (e, out) => { const m = !e && /"claude\.exe","(\d+)"/i.exec(String(out)); r(m ? m[1] : null); }));
+  if (!pid) return;
+  if (pid !== debuggerPid) { debuggerPid = pid; debuggerTries = 0; }
+  if (debuggerTries >= 3) return;
+  const r = await heal.enableDebugger().catch(e => ({ ok: false, code: -3, message: e.message }));
+  if (r.ok) { lastCdpOk = true; debuggerTries = 0; lastDebuggerWait = null; orch.log('debugger auto-enable: on again'); return; }
+  if (DEBUGGER_WAITING.has(r.code)) {
+    debuggerNext = Date.now() + 60000;
+    if (lastDebuggerWait !== r.code) orch.log('debugger auto-enable: waiting — ' + r.message);
+    lastDebuggerWait = r.code;
+    return;
+  }
+  debuggerTries++; debuggerNext = Date.now() + 10 * 60000; lastDebuggerWait = null;
+  orch.log('debugger auto-enable: failed (' + debuggerTries + '/3, exit ' + r.code + ') — ' + r.message + (r.detail ? ' [' + r.detail + ']' : ''));
 }
+
+// followClaude (lib/follow.js): the tray starts Baton when Claude Desktop opens; this stops it after
+// Desktop exits, once the exit-window account sync has run.
+const claudeUp = () => new Promise(r => execFile('tasklist', ['/FI', 'IMAGENAME eq claude.exe', '/NH'], { windowsHide: true },
+  (e, out) => r(e ? null : /claude\.exe/i.test(String(out)))));
+const follow = require('./lib/follow').makeFollow({
+  enabled: () => process.platform === 'win32' && config.get().followClaude === true,
+  claudeUp,
+  busy: () => require('./lib/updater').busyReason(),
+  sync: async () => {
+    const acct = config.get().accounts || {};
+    if (!config.mod('accounts') || acct.enabled === false) return 'accounts off';
+    const sync = require('./lib/account-sync');
+    let out = 'auto-sync off';
+    if (acct.autoSync) {
+      const r = await sync.bootPass({ trigger: 'desktop-exit' });
+      out = !r ? 'not run' : r.skipped ? 'skipped (' + r.presence + ')' : r.ok === false ? 'failed: ' + r.error
+        : (r.applied ? r.applied.count : 0) + ' change(s) written, ' + (r.pendingCount || 0) + ' pending';
+    }
+    try { await sync.transferTick({ exited: true }); } catch (e) { out += '; account-switch transfer failed: ' + e.message; }
+    return out;
+  },
+  stop: () => shutdown('follow-claude'),
+  log: (m) => orch.log('follow Claude: ' + m),
+});
 
 // The project index (lib/projects.js) is file reads only, so it runs outside the UI lane; the
 // organizer's moves drive the sidebar, so they run inside it, idle-gated per move.
@@ -640,6 +676,7 @@ async function evictWedgedHolder(reason) {
     setInterval(() => serialise(chipwatchTick), CHIPWATCH_MS);
     setInterval(() => serialise(uiQueueTick), 45000);
     setInterval(() => serialise(debuggerTick), 60000);
+    setInterval(() => { follow.tick().catch(e => orch.log('follow Claude: ' + e.message)); }, 5000);
     setInterval(() => { if (config.mod('accounts')) require('./lib/account-sync').autoTick().then(r => { if (r && (r.applied || r.error)) orch.log('accounts auto-sync: ' + (r.error || r.applied + ' change(s) written')); }).catch(e => orch.log('accounts auto-sync: ' + e.message)); }, 15000);
     // Boot window: Desktop not running yet when Baton starts -> the pass that waits for a closed Desktop runs now.
     if (config.mod('accounts')) require('./lib/account-sync').bootPass().then(r => { if (r && (r.applied || r.error)) orch.log('accounts boot pass: ' + (r.error || (r.applied.count || 0) + ' change(s) written')); }).catch(e => orch.log('accounts boot pass: ' + e.message));

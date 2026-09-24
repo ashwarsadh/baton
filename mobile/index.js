@@ -1085,9 +1085,13 @@ async function handle(req, res) {
   if (p === '/api/desktop/enable-debugger' && req.method === 'POST') {
     if (process.platform !== 'win32') return json(res, 200, { ok: false, error: 'MANUAL', message: 'Turning the debugger on automatically is Windows-only for now. Follow the steps shown.' });
     if (!devModeOn()) return json(res, 200, { ok: false, error: 'DEV_MODE_OFF', message: 'Turn on Developer Mode first, then quit and reopen Claude Desktop.' });
-    const steps = [];
-    const on = await require('../lib/heal').repairCdp(steps);
-    return json(res, 200, { ok: on, steps });
+    // One switch-on at a time: a second press joins the first instead of clicking the menus twice.
+    const heal = require('../lib/heal');
+    if ((await heal.checkCdp()).healthy) return json(res, 200, { ok: true, already: true, message: 'Claude Desktop’s debugger is already on.' });
+    if (!enableDebuggerRun) enableDebuggerRun = heal.enableDebugger().finally(() => { enableDebuggerRun = null; });
+    const r = await enableDebuggerRun;
+    log('enable-debugger (button): exit ' + r.code + ' ' + (r.detail || r.message));
+    return json(res, 200, r);
   }
   if (p === '/api/tunnel') return json(res, 200, { ok: true, tunnel: tunnel.status() });
   if (p === '/api/tunnel/login' && req.method === 'POST') return json(res, 200, await tunnel.login());
@@ -1668,6 +1672,7 @@ function transcriptTail(id, span = TAIL_BYTES) {
 
 let startDefaults = null;
 function startDefaultsCached() { return startDefaults; }
+let enableDebuggerRun = null;
 function devModeOn() {
   try { return JSON.parse(fs.readFileSync(path.join(config.APPDATA, 'Claude', 'developer_settings.json'), 'utf8')).allowDevTools === true; } catch { return false; }
 }

@@ -36,7 +36,7 @@
     ['cloudflare-named', 'Anywhere — my own address', 'A fixed https address on your domain through your free Cloudflare account. Best for daily use.'],
   ];
 
-  var S = null, section = 'general', pairData = null, saving = false, desk = null, modelList = null;
+  var S = null, section = 'general', pairData = null, saving = false, desk = null, modelList = null, deskMsg = null;
   var EFFORTS = ['low', 'medium', 'high', 'max'];
   var LEVELS = [['easy', 'Easy', 'Look-ups, renames, small edits.'], ['medium', 'Medium', 'Ordinary features and fixes.'],
     ['hard', 'Hard', 'Debugging, research, multi-file work.'], ['extraHard', 'Extra hard', 'Architecture, concurrency, anything that failed once (escalation).']];
@@ -159,7 +159,7 @@
       ' › <b>Troubleshooting</b> › <b>Enable Developer Mode</b>. This menu is hidden until you do it; afterwards a new <b>Developer</b> menu appears.</li>' +
       '<li><b>Turn on the Main Process Debugger.</b> ' + (mac ? 'Menu bar' : '☰') + ' › <b>Developer</b> › <b>Enable Main Process Debugger</b>, then press OK.</li>' +
       '<li>Press <b>Check again</b>.</li></ol>' +
-      '<p class="set-small">The debugger switches itself off whenever Claude Desktop restarts. ' + (mac ? 'On macOS, repeat step 2 after a restart (automatic re-enabling is Windows-only for now).' : 'Baton turns it back on for you while you are away from the keyboard (Advanced › Re-enable automatically).') +
+      '<p class="set-small">The debugger switches itself off whenever Claude Desktop restarts. ' + (mac ? 'On macOS, repeat step 2 after a restart (automatic re-enabling is Windows-only for now).' : 'Baton turns it back on for you once Claude Desktop is signed in, after a 3-2-1 countdown on the computer (Advanced › Re-enable automatically).') +
       ' It listens on this computer only (127.0.0.1).</p>';
   }
 
@@ -175,7 +175,8 @@
       : '<div class="set-card"><b>Developer Mode is off.</b><p>Baton can switch it on for you. Then quit Claude Desktop completely and open it again.</p><button class="ghost primary" id="set-dev-mode">Turn on Developer Mode</button></div>';
     h += '<div class="set-inline"><button class="ghost" id="set-desk-check">Check again</button>' +
       (!desk.cdp && desk.canAutoEnable && desk.devMode ? '<button class="ghost primary" id="set-desk-enable">Turn it on for me</button>' : '') + '</div>';
-    if (!desk.cdp && desk.canAutoEnable && desk.devMode) h += '<p class="set-small">“Turn it on for me” clicks through Claude Desktop’s menus on the computer — keep your hands off the mouse for about 20 seconds.</p>';
+    if (deskMsg) h += '<div class="set-card' + (deskMsg.err ? ' set-warn' : '') + '" id="set-desk-result">' + esc(deskMsg.text) + '</div>';
+    if (!desk.cdp && desk.canAutoEnable && desk.devMode) h += '<p class="set-small">“Turn it on for me” shows a 3-2-1 countdown on the computer, then clicks through Claude Desktop’s menus in a few seconds. The window keeps its size.</p>';
     h += '<h3>How to turn it on</h3>' + desktopSteps();
     return h;
   }
@@ -298,7 +299,8 @@
       field('appPort', 'App port', S.appPort, 'The phone/desktop app.', 'number') +
       field('port', 'Control port', S.port, 'Local API used by the CLI and MCP tools (loopback only).', 'number') +
       field('cdpPort', 'Claude Desktop debugger port', S.cdpPort, 'Developer › Enable Main Process Debugger in Claude Desktop.', 'number') +
-      toggle('autoEnableDebugger', 'Re-enable the debugger automatically', 'Windows: after Claude Desktop restarts, switch the debugger back on while you are away from the keyboard.', S.autoEnableDebugger !== false) +
+      toggle('autoEnableDebugger', 'Re-enable the debugger automatically', 'Windows: when Claude Desktop starts and you are signed in, Baton shows a 3-2-1 countdown on the computer and switches the debugger on in a few seconds. The window keeps its size.', S.autoEnableDebugger !== false) +
+      toggle('followClaude', 'Run Baton only while Claude Desktop is open', 'Windows, with the tray icon: Baton starts when Claude Desktop opens. When Desktop exits, Baton runs the account sync (if it is on) and then stops. It waits for running Baton tasks first.', S.followClaude === true) +
       '<h3>Workers</h3>' +
       '<label class="set-field"><span><b>Trusted project folders</b><small>Headless workers may open any folder directly inside these without Claude Code’s trust prompt, e.g. your projects folder. One absolute path per line; a whole drive is refused. Empty = only Baton’s own folders and each task’s folder.</small></span>' +
       '<textarea data-field="trustedRoots" data-list="1" rows="2" autocomplete="off">' + esc((S.trustedRoots || []).join('\n')) + '</textarea></label>' +
@@ -352,7 +354,7 @@
       '<li><b>Nothing stalls.</b> Sessions stopped by a usage limit continue when it resets; sessions cut off by a crash pick up again.</li>' +
       '<li><b>A conductor for many sessions.</b> Tell one session “you are the master” and it can spawn workers, track them and get woken when they finish.</li>' +
       '<li><b>Everything is optional.</b> Switch modules on and off in Settings.</li></ol>' +
-      (desk && !desk.cdp ? '<div class="set-card set-warn"><b>First, connect Claude Desktop.</b>' + desktopSteps() + '<div class="set-inline"><button class="ghost" id="set-desk-check">Check again</button>' + (desk.canAutoEnable ? '<button class="ghost primary" id="set-desk-enable">Turn it on for me</button>' : '') + '</div></div>' : '') +
+      (desk && !desk.cdp ? '<div class="set-card set-warn"><b>First, connect Claude Desktop.</b>' + desktopSteps() + '<div class="set-inline"><button class="ghost" id="set-desk-check">Check again</button>' + (desk.canAutoEnable ? '<button class="ghost primary" id="set-desk-enable">Turn it on for me</button>' : '') + '</div>' + (deskMsg ? '<p class="set-small" id="set-desk-result">' + esc(deskMsg.text) + '</p>' : '') + '</div>' : '') +
       '<div class="sheet-actions"><button class="ghost primary" id="set-start">Pair my phone</button><button class="ghost" id="set-skip">Later</button></div>';
   }
 
@@ -394,11 +396,12 @@
         try { navigator.clipboard.writeText(b.dataset.url); note('Link copied'); } catch (e) { note('Copy failed', true); }
       };
     });
+    // A handler must never touch `x` when clicked: by then it points at the last element bound here.
     var x;
     if ((x = $('go-remote'))) x.onclick = function (e) { e.preventDefault(); section = 'remote'; render(); };
     if ((x = $('set-recheck'))) x.onclick = function () { loadPair(); };
     if ((x = $('set-cf-login'))) x.onclick = function () {
-      x.disabled = true; x.textContent = 'Opening…';
+      var btn = this; btn.disabled = true; btn.textContent = 'Opening…';
       req('/api/tunnel/login', {}).then(function (r) {
         if (r.loginUrl) { window.open(r.loginUrl, '_blank'); note('Finish the login in the new tab, then come back'); pollLogin(); }
         else if (r.already) { note('Already connected'); loadPair(); }
@@ -406,11 +409,11 @@
       });
     };
     if ((x = $('set-cf-setup'))) x.onclick = function () {
-      var host = $('set-cf-host').value.trim();
-      x.disabled = true; x.textContent = 'Creating…';
+      var btn = this, host = $('set-cf-host').value.trim();
+      btn.disabled = true; btn.textContent = 'Creating…';
       req('/api/tunnel/setup', { hostname: host }).then(function (r) {
         if (r.ok) { note('Address ready: https://' + r.hostname); pairData = null; load(); }
-        else { note(r.error || 'Setup failed', true); x.disabled = false; x.textContent = 'Create'; }
+        else { note(r.error || 'Setup failed', true); btn.disabled = false; btn.textContent = 'Create'; }
       });
     };
     if ((x = $('set-rotate'))) x.onclick = function (e) {
@@ -420,24 +423,37 @@
     };
     if ((x = $('set-desk-check'))) x.onclick = function () { desk = null; render(); loadDesk(); };
     if ((x = $('set-dev-mode'))) x.onclick = function () {
-      x.disabled = true;
+      var btn = this; btn.disabled = true;
       req('/api/desktop/dev-mode', {}).then(function (r) { note(r.message || (r.ok ? 'Developer Mode is on' : 'Could not switch it on'), !r.ok); desk = null; render(); loadDesk(); });
     };
     if ((x = $('set-desk-enable'))) x.onclick = function () {
-      x.disabled = true; x.textContent = 'Working… hands off the mouse';
-      req('/api/desktop/enable-debugger', {}).then(function (r) {
-        note(r.ok ? 'Debugger is on' : (r.message || 'Could not turn it on — use the steps below'), !r.ok);
+      // Always ends in a visible result: the server's sentence, a network error, or a timeout.
+      var btn = this; btn.disabled = true; btn.textContent = 'Working… watch the computer’s screen';
+      var ctl = window.AbortController ? new AbortController() : null;
+      var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 90000);
+      var o = { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}' };
+      if (ctl) o.signal = ctl.signal;
+      fetch('/api/desktop/enable-debugger', o).then(function (r) {
+        return r.json().catch(function () { return { ok: false, message: 'The computer answered HTTP ' + r.status + ' instead of a result.' }; });
+      }).then(function (r) {
+        return { ok: !!r.ok, text: r.message || (r.ok ? 'Claude Desktop’s debugger is on.' : 'Could not turn it on (' + (r.error || 'no reason given') + '). Use the steps below.') };
+      }, function (e) {
+        return { ok: false, text: e && e.name === 'AbortError' ? 'No answer from the computer after 90 seconds. Check again, or use the steps below.' : 'Could not reach the computer: ' + ((e && e.message) || 'network error') };
+      }).then(function (m) {
+        clearTimeout(timer);
+        deskMsg = { text: m.text, err: !m.ok };
+        note(m.text, !m.ok);
         desk = null; render(); loadDesk();
       });
     };
     if ((x = $('set-welcome'))) x.onclick = function () { section = 'welcome'; render(); };
     if ((x = $('set-backup-test'))) x.onclick = function () {
-      x.disabled = true;
+      var btn = this; btn.disabled = true;
       req('/api/notify/test-backup', {}).then(function (r) {
         var d = (r && r.result) || {};
         note(r && r.ok ? 'Test sent' : 'Test failed: ' + (d.error || d.skipped || (d.status ? 'HTTP ' + d.status : 'unknown')), !(r && r.ok));
-        x.disabled = false;
-      }).catch(function (e) { note('Test failed: ' + e.message, true); x.disabled = false; });
+        btn.disabled = false;
+      }).catch(function (e) { note('Test failed: ' + e.message, true); btn.disabled = false; });
     };
     if ((x = $('set-start'))) x.onclick = function () { save({ onboarded: true }, true); section = 'pair'; render(); };
     if ((x = $('set-skip'))) x.onclick = function () { save({ onboarded: true }, true); close(); };

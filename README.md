@@ -202,7 +202,8 @@ stays **hidden until you turn on Developer Mode**:
 3. Check it: `baton status`, or **Settings › Desktop connection › Check again**.
 
 The debugger switches itself off whenever Claude Desktop restarts. **On Windows Baton turns it back on for
-you** — it clicks through the same menus while you are away from the keyboard, and `baton debugger` does it on
+you** — once Desktop is signed in it shows a 3-2-1 countdown on screen and clicks through the same menus in a
+few seconds, without resizing the window, and `baton debugger` does it on
 demand. On macOS, repeat step 2 after a restart; automatic re-enabling is Windows-only for now.
 
 Until it is connected, the app shows a banner, the tray icon says *Claude Desktop not connected*, and
