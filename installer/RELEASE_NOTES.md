@@ -1,5 +1,11 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.21
+
+**The debugger countdown says why it paused, and sits at the top of the screen.** When you move the mouse, click
+or type during the "3, 2, 1", the bar now reads, for example, "Baton: snoozed - mouse moved. Trying again in 5s".
+The bar moved from the bottom of the screen, where it covered Claude's message box, to the top centre.
+
 ## 0.2.20
 
 **The debugger countdown waits for you.** If you move the mouse or type during Baton's "3, 2, 1", it pauses

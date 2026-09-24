@@ -46,6 +46,8 @@ public class N {
   [StructLayout(LayoutKind.Sequential)] public struct LII { public uint cbSize; public uint dwTime; }
   [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LII p);
   // Tick of the last keyboard or mouse input in this session; changes whenever you touch either.
+  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vk);
+  public static bool MouseButtonDown() { return (GetAsyncKeyState(1) & 0x8000) != 0 || (GetAsyncKeyState(2) & 0x8000) != 0 || (GetAsyncKeyState(4) & 0x8000) != 0; }
   public static uint LastInput() { LII l = new LII(); l.cbSize = 8; GetLastInputInfo(ref l); return l.dwTime; }
   // WTSConnectState of this session: 0 = active, 4 = disconnected (Remote Desktop closed), -1 = unknown.
   public static int ConnState() { IntPtr b; int n; if (!WTSQuerySessionInformation(IntPtr.Zero, -1, 8, out b, out n)) return -1; int v = Marshal.ReadInt32(b); WTSFreeMemory(b); return v; }
@@ -77,6 +79,12 @@ function WaitFind($name, [int]$ms) { $t = [Environment]::TickCount; do { $e = Fi
 function Center($el) { $r = $el.Current.BoundingRectangle; return @([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2)) }
 function MoveTo($el) { $p = Center $el; [void][N]::SetCursorPos($p[0], $p[1]) }
 function RealClick($el) { $p = Center $el; [void][N]::SetCursorPos($p[0], $p[1]); Start-Sleep -Milliseconds 40; [N]::mouse_event([N]::LEFTDOWN, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 30; [N]::mouse_event([N]::LEFTUP, 0, 0, 0, [IntPtr]::Zero) }
+function InputKind($p0) {
+  $p = [System.Windows.Forms.Cursor]::Position
+  if ($p.X -ne $p0.X -or $p.Y -ne $p0.Y) { return 'mouse moved' }
+  if ([N]::MouseButtonDown()) { return 'mouse clicked' }
+  return 'key pressed'
+}
 function Say($m, $c) { if ($script:bar) { try { $script:bar.Say($m, $c) } catch {} } }
 
 function Finish([int]$code, [string]$msg) {
@@ -122,36 +130,36 @@ try {
 if (-not $signedIn) { Finish 10 'Claude Desktop is not signed in yet' }
 try { $age = ((Get-Date) - $cl.StartTime).TotalSeconds; if ($age -lt 20) { Start-Sleep -Milliseconds ([int]((20 - $age) * 1000)) } } catch {}
 
-# The on-screen countdown, bottom centre of the screen Claude Desktop is on. It never takes focus
+# The on-screen countdown, top centre of the screen Claude Desktop is on (not over its text box). It never takes focus
 # and clicks pass through it.
 try {
   $script:bar = New-Object BatonBar
   $wa = [System.Windows.Forms.Screen]::FromHandle($h).WorkingArea
-  $script:bar.Left = [int]($wa.Left + ($wa.Width - $script:bar.Width) / 2); $script:bar.Top = [int]($wa.Bottom - $script:bar.Height - 40)
+  $script:bar.Left = [int]($wa.Left + ($wa.Width - $script:bar.Width) / 2); $script:bar.Top = [int]($wa.Top + 8)   # top: at the bottom it covered the Claude text box
   $script:bar.Show()
   $snoozeStart = $null
   while ($true) {
-    $base = [N]::LastInput(); $busy = $false
+    $base = [N]::LastInput(); $busy = $false; $p0 = [System.Windows.Forms.Cursor]::Position
     for ($i = $Countdown; $i -ge 1 -and -not $busy; $i--) {
       Say ("Baton: turning on Claude's debugger in $i" + $(if ($i -gt 1) { '...' } else { ' - hands off the mouse' })) $WHITE
       $t = [Environment]::TickCount
       while ([Environment]::TickCount - $t -lt 1000) {
         [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 50
-        if ([N]::LastInput() -ne $base) { $busy = $true; break }
+        if ([N]::LastInput() -ne $base) { $busy = $true; $why = InputKind $p0; break }
       }
     }
     if (-not $busy) { break }
     # You touched the mouse or keyboard: wait until you have been still for SnoozeMs, then count again.
     if (-not $snoozeStart) { $snoozeStart = [Environment]::TickCount }
     $script:snoozes++
-    Log ("input during the countdown - snooze " + $script:snoozes)
+    Log ("snoozed - " + $why + " during the countdown (snooze " + $script:snoozes + ")")
     $last = [N]::LastInput(); $quiet = [Environment]::TickCount
     while ([Environment]::TickCount - $quiet -lt $SnoozeMs) {
       if ([Environment]::TickCount - $snoozeStart -gt $MaxSnoozeMs) { Finish 12 'you kept using the computer, so Baton will try again in a minute' }
       $left = [Math]::Ceiling(($SnoozeMs - ([Environment]::TickCount - $quiet)) / 1000)
-      Say ("Baton: paused while you use the computer - trying again in ${left}s") $WHITE
+      Say ("Baton: snoozed - " + $why + ". Trying again in ${left}s") $WHITE
       [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100
-      $now = [N]::LastInput(); if ($now -ne $last) { $last = $now; $quiet = [Environment]::TickCount }
+      $now = [N]::LastInput(); if ($now -ne $last) { $why = InputKind $p0; $p0 = [System.Windows.Forms.Cursor]::Position; $last = $now; $quiet = [Environment]::TickCount }
     }
   }
   Say "Baton: turning on Claude's debugger..." $WHITE
