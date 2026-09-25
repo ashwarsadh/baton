@@ -195,6 +195,8 @@
       sel('newSession.effort', 'Default effort', n.effort || '', [['', 'Same as Claude Desktop']].concat(eo)) +
       '<label class="set-field"><span><b>Default instructions</b><small>Added to the first message of every session you start from Baton, e.g. “Keep replies short. Run the tests before you say done.”</small></span>' +
       '<textarea data-field="newSession.instructions" rows="3">' + esc(n.instructions || '') + '</textarea></label>' +
+      toggle('tierBeforeWake', 'Use these before a wake', 'Before the Conductor or a master wakes an existing session, switch it to the default model and effort above. Every session Baton starts gets them before its first message.', S.tierBeforeWake !== false) +
+      field('tierOverrideHours', 'Keep my own changes for (hours)', S.tierOverrideHours != null ? S.tierOverrideHours : 4, 'A model or effort you change by hand in a session is left alone this long; after that Baton may put the default back.', 'number') +
       '<h3>Workers by difficulty</h3><p class="set-small">When a master or the Conductor spawns a worker, Baton grades the task and starts it on the model below. A task that fails can be escalated one level.</p>';
     LEVELS.forEach(function (L) {
       var cur = lv[L[0]] || {};

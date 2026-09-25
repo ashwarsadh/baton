@@ -722,7 +722,7 @@ const TOOLS = [
       const ids = Array.isArray(a.session_ids) ? a.session_ids : [a.session_ids];
       const results = [];
       for (const id of ids) {
-        try { results.push(await desktop.setModel(id, a.model, { protect: !!a.protect })); }
+        try { results.push(await desktop.setModel(id, a.model, { protect: !!a.protect })); require('../lib/tier-policy').recordUser(id, { model: a.model }); }
         catch (e) { results.push({ ok: false, sessionId: id, error: 'FAILED', message: e.message }); }
       }
       const changed = results.filter(r => r.ok && !r.unchanged).length;
@@ -747,6 +747,19 @@ const TOOLS = [
     },
   },
   {
+    name: 'baton_prepare_wake',
+    description: 'MASTERS AND THE CONDUCTOR. Call right BEFORE you wake existing sessions with ccd_session_mgmt send_message. Puts each session on Settings › New session\'s model and effort, in the background (nothing is opened, no dot is cleared), unless the user changed that session\'s model or effort by hand within tierOverrideHours (default 4): that choice is left alone. Does nothing when Settings › "Use these before a wake" (tierBeforeWake) is off. Baton\'s own wakes and chip starts already do this.',
+    inputSchema: { type: 'object', properties: { session_ids: { type: 'array', items: { type: 'string' } } }, required: ['session_ids'] },
+    handler: async (a) => {
+      const tp = require('../lib/tier-policy');
+      const ids = Array.isArray(a.session_ids) ? a.session_ids : [a.session_ids];
+      const results = [];
+      for (const id of ids) results.push({ sessionId: id, ...(await tp.beforeWake(id)) });
+      audit(`PREPARE_WAKE by ${ME}: ${results.map(r => r.sessionId + '=' + (r.skipped || JSON.stringify(r.applied || {}))).join(' ')}`);
+      return { results };
+    },
+  },
+  {
     name: 'baton_set_effort',
     description: 'MASTER ONLY. Change the reasoning effort of an EXISTING Claude Desktop session: low | medium | high | extra | max | ultracode.\n\nThe effort control is a slider in the composer of the open session, so as with baton_set_model the target is OPENED and any unread/awaiting marker is cleared — reported back as `markerCleared`. Pass protect:true to skip marked sessions. Restores the previously-open session and verifies by re-reading the control label.',
     inputSchema: {
@@ -762,7 +775,7 @@ const TOOLS = [
       const ids = Array.isArray(a.session_ids) ? a.session_ids : [a.session_ids];
       const results = [];
       for (const id of ids) {
-        try { results.push(await desktop.setEffort(id, a.effort, { protect: !!a.protect })); }
+        try { results.push(await desktop.setEffort(id, a.effort, { protect: !!a.protect })); require('../lib/tier-policy').recordUser(id, { effort: a.effort }); }
         catch (e) { results.push({ ok: false, sessionId: id, error: 'FAILED', message: e.message }); }
       }
       const changed = results.filter(r => r.ok && !r.unchanged).length;

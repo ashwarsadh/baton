@@ -1,5 +1,9 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.24
+
+**Your own model and effort choices are kept; everything else starts on the default.** A model or effort you change by hand in a session is left alone for 4 hours (Settings › Models, "Keep my own changes for"); after that, Baton may put the Settings › New session default back. With "Use these before a wake" on (the default), Baton moves a session to the default before the Conductor or a master wakes it. Chips now start on the default model and effort before their first message: the session that starts a chip is switched for the moment of the start and then put back. New tool: baton_prepare_wake, to call before waking sessions with send_message.
+
 ## 0.2.23
 
 **Every spawn starts on the model and effort you chose.** A worker started with no model or effort now takes Settings › New session, the same default the phone uses. The Conductor protocol tells it to set model and effort before every wake or spawn; ops lanes may go lower.

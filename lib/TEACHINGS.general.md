@@ -11,6 +11,9 @@ there, not here.
   itself to `baton_spawn` and to phone-started sessions when you pass nothing. An ops lane (a sweep,
   a liveness check, a download) may go LOWER than the default. Going HIGHER needs a reason written
   in the brief. A session left on max effort for mechanical work burns the plan's limit.
+- **A model or effort the user changed by hand wins for a few hours** (Settings: tierOverrideHours, default 4).
+  After that the default may go back on. Baton does this itself for its own wakes and chip starts; before
+  waking a session with send_message, call baton_prepare_wake.
 - **The wake is the cost, not the words.** Batch what you have for a session into ONE message, and
   wake it while its cache is warm (inside about an hour).
 

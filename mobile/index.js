@@ -1460,9 +1460,11 @@ async function handle(req, res) {
                      note: (out && (out.message || out.detail)) || '' }));
     }
     if (p === '/api/model') {
+      require('../lib/tier-policy').recordUser(body.id, { model: body.model });
       return uiJob(res, 'model', () => desktop.setModel(body.id, body.model), tierEcho);
     }
     if (p === '/api/effort') {
+      require('../lib/tier-policy').recordUser(body.id, { effort: body.effort });
       return uiJob(res, 'effort', () => desktop.setEffort(body.id, body.effort), tierEcho);
     }
     if (p === '/api/fast') {

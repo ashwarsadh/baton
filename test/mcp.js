@@ -67,7 +67,7 @@ function server(sessionId) {
   check(st.body && st.body.role === 'SLAVE', 'status: a fresh session is a SLAVE', st.body && st.body.role);
 
   const CONTROL = [['baton_spawn', { prompt: 'do something' }], ['baton_list_sessions', {}], ['baton_tasks', {}], ['baton_escalate', { taskId: 't0001' }],
-    ['baton_stop', { taskId: 't0001' }], ['baton_fleet', {}], ['baton_archive_candidates', {}], ['baton_set_model', { sessionIds: ['local_x'], model: 'claude-opus-5-5' }]];
+    ['baton_stop', { taskId: 't0001' }], ['baton_fleet', {}], ['baton_archive_candidates', {}], ['baton_set_model', { sessionIds: ['local_x'], model: 'claude-opus-5-5' }], ['baton_prepare_wake', { session_ids: ['local_x'] }]];
   if (names.includes('baton_goal_add')) CONTROL.push(['baton_goal_add', { title: 'x' }]);
   for (const [n, args] of CONTROL) {
     if (!names.includes(n)) { check(false, `${n} exists to be gated`); continue; }
