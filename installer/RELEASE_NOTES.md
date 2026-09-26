@@ -1,5 +1,9 @@
 Baton puts your Claude Desktop Code-tab sessions on your phone and in a desktop web app. Each download below includes its own Node.js 22 LTS runtime, so you do not need to install Node.
 
+## 0.2.25
+
+**Baton puts you back on the session you were on.** When a call has to open another session (a goal, a chip start, a picker change, a compaction, an answer), Baton now routes you back, reveals your session's row if the sidebar had scrolled it out of view, and checks that it worked. Before, it clicked the row only if it was visible and never checked, and a goal that hit an error skipped the step entirely.
+
 ## 0.2.24
 
 **Your own model and effort choices are kept; everything else starts on the default.** A model or effort you change by hand in a session is left alone for 4 hours (Settings › Models, "Keep my own changes for"); after that, Baton may put the Settings › New session default back. With "Use these before a wake" on (the default), Baton moves a session to the default before the Conductor or a master wakes it. Chips now start on the default model and effort before their first message: the session that starts a chip is switched for the moment of the start and then put back. New tool: baton_prepare_wake, to call before waking sessions with send_message.

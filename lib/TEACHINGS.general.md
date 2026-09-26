@@ -17,6 +17,11 @@ there, not here.
 - **The wake is the cost, not the words.** Batch what you have for a session into ONE message, and
   wake it while its cache is warm (inside about an hour).
 
+## The user's screen
+- **Never leave the user on a different session.** Baton's own calls put the user back where they were. Claude
+  Desktop's open_session_in is not Baton's: do not use it to read or wake a session (use list_events /
+  send_message), and if you must, open their previous session again afterwards.
+
 ## Finishing work
 - **Never end a turn on a question you can answer yourself.** Pick the sensible default, state the
   assumption in one line, and finish. Ask only about money, deletion, sending something to an
